@@ -88,6 +88,84 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testReopeningTheSameSessionKeepsTheKeyboardWaiting() throws {
+        let spy = AppRecorderSpy()
+        spy.nextRecorderStartError = AppAudioRecorderError.noInputAvailable
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let app = FreeFlowAppModel(environment: stores.environment(recorderSpy: spy))
+        let session = UUID()
+        spy.awaitedSessionID = session
+        let url = try XCTUnwrap(URL(string: "freeflow://dictate?session=\(session.uuidString)"))
+
+        app.handle(url: url)
+        let recorder = try XCTUnwrap(app.activeRecorder)
+        recorder.startIfNeeded()
+        XCTAssertEqual(recorder.phase, .failed(message: RecorderModel.startFailedMessage, retry: .recordAgain))
+
+        // The keyboard's "Open FreeFlow" while waiting reopens the same session.
+        spy.nextRecorderStartError = nil
+        app.handle(url: url)
+
+        XCTAssertTrue(app.activeRecorder === recorder)
+        XCTAssertEqual(spy.awaitedSessionID, session, "The keyboard must still be waiting for this session")
+        XCTAssertEqual(recorder.phase, .starting, "A failed recording gets another try")
+    }
+
+    @MainActor
+    func testReopeningTheSameSessionKeepsAFinishedResult() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult())]
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let app = FreeFlowAppModel(environment: stores.environment(recorderSpy: spy))
+        let session = UUID()
+        spy.awaitedSessionID = session
+
+        app.startDictation(mode: .handoff(sessionID: session))
+        let recorder = try XCTUnwrap(app.activeRecorder)
+        recorder.startIfNeeded()
+        try XCTUnwrap(spy.lastRecorder).onFirstAudio?()
+        _ = await appWaitUntil { recorder.phase == .recording }
+        recorder.stop()
+        _ = await appWaitUntil { recorder.phase.accessibilityName == "handed-off" }
+
+        app.startDictation(mode: .handoff(sessionID: session))
+
+        XCTAssertTrue(app.activeRecorder === recorder)
+        XCTAssertEqual(spy.pending.count, 1)
+        XCTAssertEqual(spy.recorders.count, 1)
+    }
+
+    @MainActor
+    func testClosingOtherPresentationsBumpsTheGeneration() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let app = FreeFlowAppModel(environment: stores.environment())
+        let generation = app.presentationResetGeneration
+
+        app.closeOtherPresentations()
+
+        XCTAssertEqual(app.presentationResetGeneration, generation + 1)
+    }
+
+    @MainActor
+    func testPresentationWaitStopsWhenTheConditionHolds() async {
+        var checks = 0
+        let started = Date()
+        await FreeFlowPresentation.wait(timeout: 5) {
+            checks += 1
+            return checks >= 3
+        }
+        XCTAssertEqual(checks, 3)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 4)
+
+        let timedOut = Date()
+        await FreeFlowPresentation.wait(timeout: 0.1) { false }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(timedOut), 0.1)
+    }
+
+    @MainActor
     func testAnIdleRecorderIsReplaced() throws {
         let stores = AppTestStores()
         defer { stores.tearDown() }

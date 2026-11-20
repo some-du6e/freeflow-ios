@@ -28,14 +28,23 @@ enum OnboardingStep: String, CaseIterable {
     }
 
     /// The page to show after a relaunch: the saved one, but never past a
-    /// page whose requirement is missing.
-    static func resume(from stored: String?, hasConsent: Bool, hasAPIKey: Bool) -> OnboardingStep {
+    /// page whose requirement is missing. iOS restarts the app when a
+    /// permission changes in Settings, so the microphone is checked again.
+    static func resume(
+        from stored: String?,
+        hasConsent: Bool,
+        hasAPIKey: Bool,
+        hasMicrophone: Bool
+    ) -> OnboardingStep {
         guard let stored, let step = OnboardingStep(rawValue: stored) else { return .welcome }
         if step.index > OnboardingStep.consent.index && !hasConsent {
             return .consent
         }
         if step.index > OnboardingStep.apiKey.index && !hasAPIKey {
             return .apiKey
+        }
+        if step.index > OnboardingStep.microphone.index && !hasMicrophone {
+            return .microphone
         }
         return step
     }
@@ -71,12 +80,14 @@ final class OnboardingModel: ObservableObject {
         self.apiForm = APIKeyFormModel(environment: environment)
         let apiKeyState = environment.apiKeyState()
         self.apiKeyState = apiKeyState
+        let microphonePermission = environment.microphone.permission
         self.step = OnboardingStep.resume(
             from: environment.settings.string(FreeFlowAppSettingKey.onboardingStep),
             hasConsent: environment.hasDataSharingConsent,
-            hasAPIKey: apiKeyState == .saved
+            hasAPIKey: apiKeyState == .saved,
+            hasMicrophone: microphonePermission == .granted
         )
-        self.microphonePermission = environment.microphone.permission
+        self.microphonePermission = microphonePermission
         self.keyboardStatus = environment.keyboardStatus.load()
     }
 

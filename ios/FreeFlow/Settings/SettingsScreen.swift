@@ -14,7 +14,9 @@ struct SettingsScreen: View {
     @State private var isConfirmingRerun = false
 
     init(environment: FreeFlowAppEnvironment) {
-        _model = StateObject(wrappedValue: SettingsScreenModel(settings: environment.settings))
+        _model = StateObject(wrappedValue: SettingsScreenModel(settings: environment.settings) {
+            environment.history.clear()
+        })
         _apiForm = StateObject(wrappedValue: APIKeyFormModel(environment: environment))
     }
 
@@ -44,6 +46,11 @@ struct SettingsScreen: View {
             if tab == .settings {
                 reload()
             }
+        }
+        .onChange(of: app.presentationResetGeneration) { _, _ in
+            isConfirmingClearHistory = false
+            isConfirmingWithdrawal = false
+            isConfirmingRerun = false
         }
         .confirmationDialog("Clear all history?", isPresented: $isConfirmingClearHistory, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) {
@@ -215,7 +222,7 @@ struct SettingsScreen: View {
         } header: {
             Text("History")
         } footer: {
-            Text("Stored locally. Only the \(HistoryLog.maxEntries) most recent runs are kept, as text only. The keyboard's Insert Last key uses the newest one.")
+            Text("Stored locally. Only the \(HistoryLog.maxEntries) most recent runs are kept, as text only. Turning Keep History off deletes them. The keyboard's Insert Last key uses the newest one.")
         }
     }
 
@@ -452,6 +459,7 @@ struct CustomVocabularyScreen: View {
 
 /// The macOS Voice Macros tab.
 struct VoiceMacrosScreen: View {
+    @EnvironmentObject private var app: FreeFlowAppModel
     @ObservedObject var model: SettingsScreenModel
     @State private var editing: VoiceMacroDraft?
 
@@ -497,6 +505,9 @@ struct VoiceMacrosScreen: View {
                 }
                 .accessibilityIdentifier("freeflow.settings.addMacro")
             }
+        }
+        .onChange(of: app.presentationResetGeneration) { _, _ in
+            editing = nil
         }
         .sheet(item: $editing) { draft in
             VoiceMacroEditorSheet(draft: draft) { macro in

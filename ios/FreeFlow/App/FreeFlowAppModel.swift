@@ -54,6 +54,9 @@ final class FreeFlowAppModel: ObservableObject {
     /// Bumped when the app returns to the foreground or a recorder closes, so
     /// screens reload what the keyboard may have written meanwhile.
     @Published private(set) var refreshGeneration = 0
+    /// Bumped to ask screens to close their sheets and alerts, which would
+    /// otherwise stop the recorder from being presented.
+    @Published private(set) var presentationResetGeneration = 0
 
     let environment: FreeFlowAppEnvironment
     private let microphoneFlagIsOverridden: Bool
@@ -131,6 +134,15 @@ final class FreeFlowAppModel: ObservableObject {
             }
             return
         }
+        // The keyboard reopened the app for the session this recorder already
+        // serves. Keep it: closing it would clear the session the keyboard is
+        // waiting on. A failed recording gets another try.
+        if let current = activeRecorder, let sessionID = mode.sessionID, current.mode.sessionID == sessionID {
+            if case .failed = current.phase {
+                current.retry()
+            }
+            return
+        }
         activeRecorder?.close()
         let recorder = RecorderModel(
             mode: mode,
@@ -140,6 +152,11 @@ final class FreeFlowAppModel: ObservableObject {
             self?.insertIntoTestField(text, pressEnter: pressEnter)
         }
         activeRecorder = recorder
+    }
+
+    /// Asks every screen to dismiss its sheets and alerts.
+    func closeOtherPresentations() {
+        presentationResetGeneration += 1
     }
 
     func closeRecorder() {

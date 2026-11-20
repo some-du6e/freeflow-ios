@@ -11,13 +11,36 @@ final class AppOnboardingTests: XCTestCase {
     }
 
     func testResumeNeverSkipsAMissingRequirement() {
-        XCTAssertEqual(OnboardingStep.resume(from: nil, hasConsent: false, hasAPIKey: false), .welcome)
-        XCTAssertEqual(OnboardingStep.resume(from: "not-a-step", hasConsent: true, hasAPIKey: true), .welcome)
-        XCTAssertEqual(OnboardingStep.resume(from: "microphone", hasConsent: true, hasAPIKey: true), .microphone)
-        XCTAssertEqual(OnboardingStep.resume(from: "microphone", hasConsent: true, hasAPIKey: false), .apiKey)
-        XCTAssertEqual(OnboardingStep.resume(from: "tryIt", hasConsent: false, hasAPIKey: true), .consent)
-        XCTAssertEqual(OnboardingStep.resume(from: "apiKey", hasConsent: true, hasAPIKey: false), .apiKey)
-        XCTAssertEqual(OnboardingStep.resume(from: "consent", hasConsent: false, hasAPIKey: false), .consent)
+        func resume(_ stored: String?, consent: Bool = true, key: Bool = true, microphone: Bool = true) -> OnboardingStep {
+            OnboardingStep.resume(from: stored, hasConsent: consent, hasAPIKey: key, hasMicrophone: microphone)
+        }
+        XCTAssertEqual(resume(nil, consent: false, key: false, microphone: false), .welcome)
+        XCTAssertEqual(resume("not-a-step"), .welcome)
+        XCTAssertEqual(resume("microphone"), .microphone)
+        XCTAssertEqual(resume("microphone", key: false), .apiKey)
+        XCTAssertEqual(resume("tryIt", consent: false), .consent)
+        XCTAssertEqual(resume("apiKey", key: false), .apiKey)
+        XCTAssertEqual(resume("consent", consent: false, key: false), .consent)
+        // The microphone page is a hard gate even after a relaunch.
+        XCTAssertEqual(resume("keyboard", microphone: false), .microphone)
+        XCTAssertEqual(resume("done", microphone: false), .microphone)
+        XCTAssertEqual(resume("microphone", microphone: false), .microphone)
+        XCTAssertEqual(resume("tryIt", key: false, microphone: false), .apiKey)
+        XCTAssertEqual(resume("done"), .done)
+    }
+
+    @MainActor
+    func testRelaunchWithoutTheMicrophoneReturnsToTheMicrophonePage() {
+        let stores = AppTestStores(microphone: AppFakeMicrophone(permission: .denied))
+        defer { stores.tearDown() }
+        stores.settings.set(true, for: FreeFlowAppSettingKey.dataSharingConsent)
+        stores.credentials.storedAPIKey = "synthetic-key"
+        stores.settings.set(OnboardingStep.tryIt.rawValue, for: FreeFlowAppSettingKey.onboardingStep)
+
+        let model = OnboardingModel(environment: stores.environment()) {}
+
+        XCTAssertEqual(model.step, .microphone)
+        XCTAssertFalse(model.primaryAction.isEnabled)
     }
 
     @MainActor

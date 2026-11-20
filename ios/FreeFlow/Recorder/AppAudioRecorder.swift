@@ -275,7 +275,11 @@ final class AppAudioRecorder: AppAudioRecording {
                 object: engine,
                 queue: .main
             ) { [weak self] _ in
-                self?.restartAfterConfigurationChange()
+                // AVAudioEngine must not be released inside its own
+                // notification callout, so rebuild on the next turn.
+                DispatchQueue.main.async { [weak self] in
+                    self?.rebuildEngineAfterConfigurationChange()
+                }
             })
         }
     }
@@ -288,18 +292,23 @@ final class AppAudioRecorder: AppAudioRecording {
     }
 
     /// A route change (headphones, Bluetooth) stops the engine and may change
-    /// the input format. Re-tap in the new format and keep writing the same
-    /// file; the writer makes a new converter when the format changes.
-    private func restartAfterConfigurationChange() {
-        guard let engine else { return }
-        os_log(.info, log: recorderLog, "audio configuration changed; restarting the engine")
-        engine.inputNode.removeTap(onBus: 0)
+    /// the hardware format. The stopped engine keeps its old tap format, and
+    /// tapping it with a different hardware rate raises an exception, so start
+    /// a fresh engine, which reads the current format, and keep writing the
+    /// same file. The writer makes a new converter when the format changes.
+    private func rebuildEngineAfterConfigurationChange() {
+        // Nil when the recording already stopped or was cancelled.
+        guard let oldEngine = engine else { return }
+        os_log(.info, log: recorderLog, "audio configuration changed; rebuilding the engine")
+        removeObservers()
+        oldEngine.inputNode.removeTap(onBus: 0)
+        oldEngine.stop()
+        engine = nil
         do {
-            try installTap(on: engine)
-            engine.prepare()
-            try engine.start()
+            try startEngine()
+            installObservers()
         } catch {
-            os_log(.error, log: recorderLog, "engine restart failed: %{public}@", String(describing: type(of: error)))
+            os_log(.error, log: recorderLog, "engine rebuild failed: %{public}@", String(describing: type(of: error)))
             onInterruption?()
         }
     }

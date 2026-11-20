@@ -21,7 +21,7 @@ struct FreeFlowRootView: View {
                 .environmentObject(app)
         }
         .onOpenURL { url in
-            app.handle(url: url)
+            openRecorder(for: url)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -32,6 +32,48 @@ struct FreeFlowRootView: View {
             default:
                 break
             }
+        }
+    }
+}
+
+extension FreeFlowRootView {
+    /// A sheet or alert left open in a tab would stop the recorder from
+    /// being presented, and the keyboard would wait for a result that never
+    /// comes. Close them first, then open the recorder.
+    fileprivate func openRecorder(for url: URL) {
+        guard FreeFlowURLRoute(url: url) != nil else { return }
+        guard app.activeRecorder == nil, FreeFlowPresentation.isPresenting else {
+            app.handle(url: url)
+            return
+        }
+        app.closeOtherPresentations()
+        Task {
+            await FreeFlowPresentation.wait(timeout: 2) { !FreeFlowPresentation.isPresenting }
+            app.handle(url: url)
+        }
+    }
+}
+
+/// What the window currently presents. SwiftUI presents every sheet and
+/// alert, including those from the tabs' hosting controllers, from the
+/// window's root view controller.
+@MainActor
+enum FreeFlowPresentation {
+    static var isPresenting: Bool {
+        rootViewController?.presentedViewController != nil
+    }
+
+    static var rootViewController: UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.compactMap { $0.keyWindow }.first ?? scenes.flatMap(\.windows).first
+        return window?.rootViewController
+    }
+
+    /// Polls `condition` every 50 ms until it holds or `timeout` passes.
+    static func wait(timeout: TimeInterval, until condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 }

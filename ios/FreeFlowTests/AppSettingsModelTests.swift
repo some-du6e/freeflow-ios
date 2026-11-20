@@ -36,6 +36,26 @@ final class AppSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testTurningHistoryOffDeletesTheSavedHistory() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        var clears = 0
+        let model = SettingsScreenModel(settings: stores.settings) { clears += 1 }
+
+        model.historyEnabled = false
+        XCTAssertEqual(clears, 1)
+        XCTAssertFalse(stores.settings.historyEnabled)
+
+        model.historyEnabled = true
+        XCTAssertEqual(clears, 1, "Turning history back on deletes nothing")
+
+        stores.settings.historyEnabled = false
+        model.reload()
+        XCTAssertFalse(model.historyEnabled)
+        XCTAssertEqual(clears, 1, "Reading the stored setting deletes nothing")
+    }
+
+    @MainActor
     func testAutoDetectAndSameAsSpokenRemoveTheirKeys() {
         let stores = AppTestStores()
         defer { stores.tearDown() }

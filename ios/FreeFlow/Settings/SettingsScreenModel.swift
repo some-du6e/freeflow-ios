@@ -35,15 +35,26 @@ final class SettingsScreenModel: ObservableObject {
             persist { settings.set(pressEnterVoiceCommandEnabled, for: FreeFlowSettingKey.pressEnterVoiceCommandEnabled) }
         }
     }
+    /// Turning Keep History off also deletes the saved history, so no
+    /// dictation text stays on the device (HistoryStore.clear()).
     @Published var historyEnabled = FreeFlowSettingDefaults.historyEnabled {
-        didSet { persist { settings.historyEnabled = historyEnabled } }
+        didSet {
+            persist {
+                settings.historyEnabled = historyEnabled
+                if !historyEnabled {
+                    clearHistory()
+                }
+            }
+        }
     }
 
     let settings: SettingsStore
+    private let clearHistory: () -> Void
     private var isLoading = false
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore, clearHistory: @escaping () -> Void = {}) {
         self.settings = settings
+        self.clearHistory = clearHistory
         reload()
     }
 

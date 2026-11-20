@@ -133,7 +133,7 @@ final class AppRecordingWAVWriterTests: XCTestCase {
         let url = AppAudioRecorder.makeRecordingURL()
         XCTAssertEqual(url.pathExtension, "wav")
         XCTAssertTrue(url.lastPathComponent.hasPrefix(AppAudioRecorder.fileNamePrefix))
-        XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL, FileManager.default.temporaryDirectory.standardizedFileURL)
+        XCTAssertEqual(url.deletingLastPathComponent().path, FileManager.default.temporaryDirectory.path)
     }
 
     func testSyntheticRecorderWritesAPlayableFile() throws {

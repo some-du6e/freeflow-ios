@@ -121,6 +121,9 @@ struct HistoryScreen: View {
                 reload()
             }
         }
+        .onChange(of: app.presentationResetGeneration) { _, _ in
+            isConfirmingClear = false
+        }
     }
 
     private func reload() {
