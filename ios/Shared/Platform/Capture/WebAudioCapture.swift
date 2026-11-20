@@ -61,8 +61,9 @@ protocol WebAudioCaptureDelegate: AnyObject {
 ///
 /// Keep one instance per process: attach it in `viewDidAppear` and detach it in
 /// `viewDidDisappear`. The page stays loaded in between, because reloading it costs the next
-/// dictation a slow start. If the page stops running script, the next failed start replaces
-/// the web view and its WebContent process.
+/// dictation a slow start. A page that stops running script fails starts with
+/// `.pageUnavailable`; one that stays stuck for `pageLivenessTimeout` gets a fresh web view
+/// and WebContent process.
 ///
 /// The caller owns `CapturedAudio.fileURL` and should delete it after use. Logs carry only
 /// states, ids, counts and durations.
@@ -97,6 +98,10 @@ final class WebAudioCapture: NSObject {
     static let staleRecordingAge: TimeInterval = 15 * 60
     /// A page that hasn't reported ready by then gets a fresh web view.
     static let pageLoadTimeout: TimeInterval = 10
+    /// A page that leaves a start command unanswered this long gets a fresh web view. It is
+    /// long because the usual cause, a cold GPU process, clears by itself in a few seconds,
+    /// and a new WebContent process would wait on the same GPU process.
+    static let pageLivenessTimeout: TimeInterval = 10
     /// Fresh web views tried for loads that time out, before waiting for the next attach.
     static let maximumPageReplacements = 2
 
@@ -131,6 +136,9 @@ final class WebAudioCapture: NSObject {
     private var allowedPageLoads = 0
     private var pageLoadWatchdog: Task<Void, Never>?
     private var timedOutPageLoads = 0
+    /// The oldest start command the current web view hasn't run yet.
+    private var unansweredStart: (session: Int, page: ObjectIdentifier)?
+    private var livenessCheck: Task<Void, Never>?
     private var nextSessionID = 1
     private var session: Session?
     private var lastStaleChunkSession: Int?
@@ -195,6 +203,12 @@ final class WebAudioCapture: NSObject {
         }
         guard isAttached, webView.window != nil else {
             Self.log.error("Capture start failed: the page is not in a window")
+            delegate?.webAudioCapture(self, didFail: .pageUnavailable)
+            return
+        }
+        if let pending = unansweredStart, pending.page == ObjectIdentifier(webView) {
+            // Queuing another command behind a stalled page would only start it late.
+            Self.log.error("Capture start failed: the page has not run session \(pending.session, privacy: .public)'s start command")
             delegate?.webAudioCapture(self, didFail: .pageUnavailable)
             return
         }
@@ -365,6 +379,7 @@ final class WebAudioCapture: NSObject {
 
     private func reloadPage() {
         let previous = state
+        clearUnansweredStart()
         isPageLoaded = false
         isPageLoading = false
         if isAttached {
@@ -462,16 +477,48 @@ final class WebAudioCapture: NSObject {
     private func startPage(_ session: Session) {
         session.hasStartedPage = true
         let id = session.id
+        let page = ObjectIdentifier(webView)
         let sentAt = ProcessInfo.processInfo.systemUptime
+        if unansweredStart?.page != page {
+            unansweredStart = (id, page)
+            livenessCheck?.cancel()
+            livenessCheck = after(Self.pageLivenessTimeout) { [weak self] in
+                self?.livenessTimeoutPassed(page: page)
+            }
+        }
         let script = "ffCapture.start({sid: \(id), synthetic: \(session.isSynthetic), echoCancellation: true}); 0"
         webView.evaluateJavaScript(script) { [weak self, weak session] _, error in
             let milliseconds = Int((ProcessInfo.processInfo.systemUptime - sentAt) * 1000)
+            self?.pageAnswered(page)
             if error != nil {
                 self?.pageCommandFailed(session: id)
                 return
             }
             session?.pageAnsweredStart = true
             WebAudioCapture.log.info("Capture page ran the start command for session \(id, privacy: .public) after \(milliseconds, privacy: .public) ms")
+        }
+    }
+
+    /// The page ran a start command, so it is running script again.
+    private func pageAnswered(_ page: ObjectIdentifier) {
+        guard unansweredStart?.page == page else { return }
+        clearUnansweredStart()
+    }
+
+    private func clearUnansweredStart() {
+        unansweredStart = nil
+        livenessCheck?.cancel()
+        livenessCheck = nil
+    }
+
+    private func livenessTimeoutPassed(page: ObjectIdentifier) {
+        guard unansweredStart?.page == page, ObjectIdentifier(webView) == page else { return }
+        Self.log.error("Capture page left a start command unanswered for \(Self.pageLivenessTimeout, privacy: .public) s; replacing the web view")
+        let session = self.session
+        // Replace first, so a retry from didFail waits for the new page.
+        replaceWebView()
+        if let session {
+            endForLostPage(session)
         }
     }
 
@@ -546,13 +593,11 @@ final class WebAudioCapture: NSObject {
             return
         }
         guard session.pageAnsweredStart else {
-            // The page's WebContent process ran no script at all. Queue a cancel behind the
-            // unanswered start in case the old page wakes up, and move to a fresh web view
-            // before reporting, so a retry from didFail waits for the new page.
-            Self.log.error("Capture page did not run the start command within \(self.startTimeoutInterval, privacy: .public) s; replacing the web view")
-            sendPageCommand("cancel", session: id)
-            replaceWebView()
-            fail(session, .pageUnavailable, cancellingPage: false)
+            // The page's WebContent process ran no script, usually while a cold GPU process
+            // starts. Keep the page, which normally recovers: the cancel queued behind the start
+            // undoes it then, and the liveness check replaces the page if it never does.
+            Self.log.error("Capture page did not run the start command within \(self.startTimeoutInterval, privacy: .public) s")
+            fail(session, .pageUnavailable, cancellingPage: true)
             return
         }
         fail(session, .startTimedOut, cancellingPage: true)

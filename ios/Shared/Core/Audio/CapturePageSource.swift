@@ -309,7 +309,22 @@ function ffSyntheticSource(onBlock) {
   window.ffCapture = { version: 1, start, stop, cancel, status };
   addEventListener('pagehide', () => { if (S) end(S, 'pagehide'); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && S) end(S, 'hidden'); });
-  post({ t: 'ready', v: 1, synthetic: typeof ffSyntheticSource === 'function' }).catch(() => {});
+  // Report ready after the first rendering update. That update opens the page's connection to
+  // WebKit's GPU process, which can stall the page for seconds while a cold GPU process starts;
+  // that wait belongs to loading, not to the first dictation. A page that never renders is
+  // ready after a second anyway.
+  let announced = false;
+  const announce = () => {
+    if (announced) return;
+    announced = true;
+    post({ t: 'ready', v: 1, synthetic: typeof ffSyntheticSource === 'function' }).catch(() => {});
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => setTimeout(announce, 0));
+    setTimeout(announce, 1000);
+  } else {
+    announce();
+  }
 })();
 """#
 }

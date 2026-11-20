@@ -27,6 +27,7 @@ enum IOSAudioCoreTests {
         testCaptureRecordingFinishesAndRejectsShortClips()
         testCapturePageHTML()
         testJavaScriptCoreRunsPromiseJobs()
+        testJavaScriptReadyWaitsForTheFirstFrame()
         testJavaScriptInt16AndBase64MatchSwift()
         testJavaScriptResamplerResponse()
         testJavaScriptCaptureSessionEndToEnd()
@@ -562,6 +563,32 @@ enum IOSAudioCoreTests {
         page.expectNoExceptions()
     }
 
+    /// The page reports ready after its first rendering update, or after 1 s without one.
+    private static func testJavaScriptReadyWaitsForTheFirstFrame() {
+        let frames = """
+            var __frames = [];
+            function requestAnimationFrame(fn) { __frames.push(fn); return __frames.length; }
+            function __frame() { const due = __frames; __frames = []; due.forEach((fn) => fn(__now)); }
+            """
+        let ready = CaptureMessage.ready(pageVersion: CapturePageSource.pageVersion, hasSyntheticSource: true)
+        let page = JSCapturePage(extraPrelude: frames)
+        TestSupport.expectEqual(page.native.messages, [])
+        page.evaluate("__frame(); 0")
+        TestSupport.expectEqual(page.native.messages, [])
+        page.evaluate("__advance(1); 0")
+        TestSupport.expectEqual(page.native.messages, [ready])
+        page.evaluate("__frame(); __advance(2000); 0")
+        TestSupport.expectEqual(page.native.messages, [ready])
+
+        let unrendered = JSCapturePage(extraPrelude: frames)
+        unrendered.evaluate("__advance(999); 0")
+        TestSupport.expectEqual(unrendered.native.messages, [])
+        unrendered.evaluate("__advance(2); 0")
+        TestSupport.expectEqual(unrendered.native.messages, [ready])
+        page.expectNoExceptions()
+        unrendered.expectNoExceptions()
+    }
+
     private static func testJavaScriptInt16AndBase64MatchSwift() {
         let page = JSCapturePage()
         var values: [Double] = [
@@ -972,7 +999,7 @@ private final class JSCapturePage {
     let native: PageBridgeRecorder
     private(set) var exceptions: [String] = []
 
-    init(includeSyntheticSource: Bool = true, directory: URL? = nil) {
+    init(includeSyntheticSource: Bool = true, directory: URL? = nil, extraPrelude: String = "") {
         guard let context = jsOptional(JSContext()) else { fatalError("Could not create a JSContext") }
         self.context = context
         native = PageBridgeRecorder(directory: directory)
@@ -982,6 +1009,9 @@ private final class JSCapturePage {
         let accept: @convention(block) (JSValue?) -> Bool = { [native] value in native.accept(value) }
         context.setObject(unsafeBitCast(accept, to: AnyObject.self), forKeyedSubscript: "__nativeAccept" as NSString)
         evaluate(Self.prelude)
+        if !extraPrelude.isEmpty {
+            evaluate(extraPrelude)
+        }
         evaluate(CapturePageSource.script(includeSyntheticSource: includeSyntheticSource))
     }
 

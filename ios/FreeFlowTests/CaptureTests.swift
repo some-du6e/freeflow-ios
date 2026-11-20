@@ -415,22 +415,50 @@ final class CaptureTests: XCTestCase {
         XCTAssertEqual(harness.capture.state, .ready)
     }
 
-    /// A page whose WebContent process stops running script gets a fresh web view, and the
-    /// next capture works while the old process is still stuck.
+    /// A page whose WebContent process stops running script for a few seconds fails starts
+    /// with pageUnavailable, refuses new ones until it answers, then works again in place.
     @MainActor
-    func testStalledPageIsReplacedByAFreshWebView() async throws {
+    func testBrieflyStalledPageRecoversInPlace() async throws {
         let harness = try await CaptureHarness.make(synthetic: true)
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
-        let stalled = harness.capture.webView
-        // Block the page's script thread for longer than the start watchdog.
-        try await harness.run("setTimeout(() => { const end = Date.now() + 6000; while (Date.now() < end) {} }, 0)")
+        let page = harness.capture.webView
+        try await harness.run(Self.stallScript(seconds: 5))
 
         harness.start()
         let event = try await harness.waitForTerminalEvent(timeout: 10)
         XCTAssertEqual(event, .failed(.pageUnavailable))
-        XCTAssertFalse(harness.capture.webView === stalled, "The stalled web view must be replaced")
-        XCTAssertNil(stalled.superview)
+        harness.start()
+        XCTAssertEqual(Array(harness.sessionEvents), [.failed(.pageUnavailable)], "A stalled page refuses new starts at once")
+
+        // This runs once the stall ends, behind the unanswered start and its cancel.
+        let answer = try await harness.evaluate("6 * 7", timeout: 15) as? Int
+        XCTAssertEqual(answer, 42)
+        XCTAssertTrue(harness.capture.webView === page, "A brief stall keeps the page")
+        harness.start()
+        try await harness.waitForStart(timeout: 10)
+        harness.capture.stop()
+        let audio = try await harness.waitForRecording(timeout: 10)
+        XCTAssertGreaterThanOrEqual(audio.frameCount, CaptureRecording.minimumFrameCount)
+    }
+
+    /// A page stuck past the liveness timeout gets a fresh web view, and with it a new
+    /// WebContent process, so capture works while the old process is still stuck.
+    @MainActor
+    func testStuckPageIsReplacedByAFreshWebView() async throws {
+        let harness = try await CaptureHarness.make(synthetic: true)
+        defer { harness.tearDown() }
+        try await harness.attachAndWaitForReady()
+        let stuck = harness.capture.webView
+        try await harness.run(Self.stallScript(seconds: WebAudioCapture.pageLivenessTimeout + 6))
+
+        harness.start()
+        let event = try await harness.waitForTerminalEvent(timeout: 10)
+        XCTAssertEqual(event, .failed(.pageUnavailable))
+        try await harness.waitUntil("the stuck web view to be replaced", timeout: WebAudioCapture.pageLivenessTimeout + 5) {
+            harness.capture.webView !== stuck
+        }
+        XCTAssertNil(stuck.superview)
         XCTAssertTrue(harness.capture.webView.window === harness.window)
 
         try await harness.waitUntil("the fresh page to load", timeout: 30) { harness.capture.isReady }
@@ -439,6 +467,11 @@ final class CaptureTests: XCTestCase {
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
         XCTAssertGreaterThanOrEqual(audio.frameCount, CaptureRecording.minimumFrameCount)
+    }
+
+    /// Blocks the page's script thread, standing in for a WebContent process that stalls.
+    private static func stallScript(seconds: TimeInterval) -> String {
+        "setTimeout(() => { const end = Date.now() + \(Int(seconds * 1000)); while (Date.now() < end) {} }, 0)"
     }
 
     func testMicrophoneIsGrantedOnlyToTheCapturePagesMainFrame() {
@@ -666,7 +699,8 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         line: UInt = #line
     ) async throws -> Any? {
         let reply = beginEvaluation(script)
-        let deadline = Date().addingTimeInterval(timeout)
+        let sentAt = Date()
+        let deadline = sentAt.addingTimeInterval(timeout)
         while !reply.isDone {
             guard Date() < deadline else {
                 if failOnTimeout {
@@ -676,7 +710,14 @@ final class CaptureHarness: WebAudioCaptureDelegate {
             }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        if let error = reply.error { throw error }
+        let seconds = Date().timeIntervalSince(sentAt)
+        if seconds > WebAudioCapture.startTimeout {
+            record("slow page answer", ["seconds": seconds, "script": String(script.prefix(40))])
+        }
+        if let error = reply.error {
+            XCTFail("The page threw for \(script.prefix(60)): \(error)", file: file, line: line)
+            throw error
+        }
         return reply.result
     }
 
