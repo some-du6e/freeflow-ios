@@ -24,7 +24,16 @@ enum FreeFlowUITestHooks {
         static let preserveExactWording = "FreeFlowUITestPreserveExactWording"
         /// YES|NO sets the App Group bool `ios_debug_synthetic_capture`.
         static let syntheticCapture = "FreeFlowUITestSyntheticCapture"
+        /// Sets the App Group string `ios_debug_keyboard_state`, which a DEBUG
+        /// simulator keyboard displays instead of its live state so UI tests
+        /// can screenshot every state, e.g. `recording:hold` or
+        /// `setup-needed:microphone`. `live` removes it.
+        static let keyboardState = "FreeFlowUITestKeyboardState"
     }
+
+    /// Read by the keyboard's DEBUG simulator build only
+    /// (`KeyboardDebugDisplayState.defaultsKey`).
+    static let debugKeyboardStateKey = "ios_debug_keyboard_state"
 
     struct Result: Equatable {
         var didReset = false
@@ -117,6 +126,13 @@ enum FreeFlowUITestHooks {
         }
         if let synthetic = boolValue(arguments[Argument.syntheticCapture]) {
             settings.set(synthetic, for: FreeFlowAppSettingKey.debugSyntheticCapture)
+        }
+        if let keyboardState = stringValue(arguments[Argument.keyboardState]) {
+            if keyboardState.lowercased() == "live" {
+                settings.removeValue(for: debugKeyboardStateKey)
+            } else {
+                settings.set(keyboardState, for: debugKeyboardStateKey)
+            }
         }
         return result
     }

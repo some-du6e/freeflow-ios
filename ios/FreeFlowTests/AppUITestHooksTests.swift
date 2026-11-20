@@ -79,6 +79,17 @@ final class AppUITestHooksTests: XCTestCase {
         XCTAssertTrue(stores.defaults.bool(forKey: "ios_debug_synthetic_capture"))
     }
 
+    func testKeyboardStateHookSetsAndClearsTheForcedState() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+
+        apply([Argument.keyboardState: "recording:hold"], stores)
+        XCTAssertEqual(stores.defaults.string(forKey: "ios_debug_keyboard_state"), "recording:hold")
+
+        apply([Argument.keyboardState: "live"], stores)
+        XCTAssertNil(stores.defaults.object(forKey: "ios_debug_keyboard_state"))
+    }
+
     func testResetClearsSharedStateBeforeTheOtherHooksApply() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
@@ -138,6 +149,7 @@ final class AppUITestHooksTests: XCTestCase {
         XCTAssertEqual(Argument.microphoneGranted, "FreeFlowUITestMicrophoneGranted")
         XCTAssertEqual(Argument.preserveExactWording, "FreeFlowUITestPreserveExactWording")
         XCTAssertEqual(Argument.syntheticCapture, "FreeFlowUITestSyntheticCapture")
+        XCTAssertEqual(Argument.keyboardState, "FreeFlowUITestKeyboardState")
     }
 
     @discardableResult

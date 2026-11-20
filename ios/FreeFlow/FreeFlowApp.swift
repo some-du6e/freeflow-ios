@@ -12,6 +12,9 @@ struct FreeFlowApp: App {
         #else
         let microphoneFlagIsOverridden = false
         #endif
+        // Same model migrations the keyboard runs when it resolves a
+        // configuration, so Settings shows the migrated model IDs.
+        DictationConfiguration.migrateLegacyModelSettings(in: SettingsStore.shared.defaults)
         NetworkMonitor.shared.start()
         AppAudioRecorder.removeLeftoverRecordings()
         _model = StateObject(wrappedValue: FreeFlowAppModel(
