@@ -604,12 +604,7 @@ final class CaptureHarness: WebAudioCaptureDelegate {
     /// evaluateJavaScript that gives up after `timeout`, so a page whose web process stopped
     /// running script fails the test instead of hanging the suite.
     func evaluate(_ script: String, timeout: TimeInterval = 10) async throws -> Any? {
-        let reply = PageReply()
-        capture.webView.evaluateJavaScript(script) { result, error in
-            reply.result = result
-            reply.error = error
-            reply.isDone = true
-        }
+        let reply = beginEvaluation(script)
         let deadline = Date().addingTimeInterval(timeout)
         while !reply.isDone {
             guard Date() < deadline else {
@@ -620,6 +615,18 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         }
         if let error = reply.error { throw error }
         return reply.result
+    }
+
+    /// Starts an evaluation from a synchronous context, where the completion-handler API is
+    /// the one to use; `evaluate` polls the reply so it can give up.
+    private func beginEvaluation(_ script: String) -> PageReply {
+        let reply = PageReply()
+        capture.webView.evaluateJavaScript(script) { result, error in
+            reply.result = result
+            reply.error = error
+            reply.isDone = true
+        }
+        return reply
     }
 
     /// Runs a statement in the page and ignores its value.
