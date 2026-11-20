@@ -169,6 +169,22 @@ ios-test:
 	rm -rf "$(IOS_RESULT_BUNDLE)"
 	$(IOS_XCODEBUILD) -resultBundlePath "$(IOS_RESULT_BUNDLE)" $(IOS_SIGNING_FLAGS) test
 
+# The UI tests expect the mock provider at http://127.0.0.1:8765/v1 and a
+# simulator with the FreeFlow keyboard and Full Access enabled. CI does both
+# (.github/workflows/ios.yml); these run the same steps by hand.
+.PHONY: ios-mock-provider ios-mock-provider-selftest ios-simulator-prepare
+ios-mock-provider:
+	python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765
+
+ios-mock-provider-selftest:
+	python3 .github/scripts/mock-openai-server.py --self-test
+
+# Usage: make ios-simulator-prepare IOS_SIMULATOR_UDID=<udid>, after ios-build.
+ios-simulator-prepare:
+	@test -n "$(IOS_SIMULATOR_UDID)" || { echo "Set IOS_SIMULATOR_UDID to a booted simulator's UDID"; exit 1; }
+	.github/scripts/prepare-ios-simulator.sh configure "$(IOS_SIMULATOR_UDID)" \
+		"$(BUILD_DIR)/ios/DerivedData/Build/Products/Debug-iphonesimulator/FreeFlow.app"
+
 icon: $(ICON_ICNS)
 
 $(ICON_ICNS): $(ICON_SOURCE)

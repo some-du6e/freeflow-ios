@@ -28,6 +28,8 @@ jobs:
       DERIVED_DATA_PATH: build/ios/DerivedData
       RESULT_BUNDLE_PATH: build/ios/FreeFlow.xcresult
       ATTACHMENTS_PATH: build/ios/attachments
+      DIAGNOSTICS_PATH: build/ios/diagnostics
+      APP_PATH: build/ios/DerivedData/Build/Products/Debug-iphonesimulator/FreeFlow.app
       SIMULATOR_NAME: iPhone 17
       SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
 
@@ -65,6 +67,13 @@ jobs:
                 TEST_HOST, TEST_TARGET_NAME, ENABLE_DEBUG_DYLIB})}' \
             || echo "::warning::Could not show build settings"
 
+      - name: Self-test the mock provider
+        run: python3 .github/scripts/mock-openai-server.py --self-test
+
+      # Starts booting now so the first boot's data migration overlaps the
+      # build. Simulator.app never runs here, so the hardware keyboard default
+      # is only a guard: a connected hardware keyboard hides the software
+      # keyboard the UI tests drive.
       - name: Boot simulator
         run: |
           udid="$(xcrun simctl list devices available --json | jq -r \
@@ -76,14 +85,62 @@ jobs:
           fi
           echo "Booting $SIMULATOR_NAME ($udid)"
           echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
-          xcrun simctl bootstatus "$udid" -b
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+          xcrun simctl boot "$udid" || echo "simctl boot exited with $?; the wait step boots it again"
 
       # Ad-hoc signing with no team keeps code signing enabled, so Xcode still
       # embeds the App Group and keychain entitlements in the simulator build.
       # CODE_SIGNING_ALLOWED=NO would drop them.
-      - name: Build and test
+      - name: Build for testing
         run: |
-          xcodebuild test \
+          xcodebuild build-for-testing \
+            -project ios/FreeFlow.xcodeproj \
+            -scheme FreeFlow \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=
+
+      - name: Wait for the simulator to boot
+        timeout-minutes: 5
+        run: xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      # Installs the app, grants the microphone, enables the FreeFlow keyboard
+      # with Full Access, and reboots the simulator. See the script's header.
+      - name: Prepare the simulator for keyboard tests
+        timeout-minutes: 6
+        run: .github/scripts/prepare-ios-simulator.sh configure "$SIMULATOR_UDID" "$APP_PATH"
+
+      # The app and keyboard reach it at http://127.0.0.1:8765/v1, because the
+      # simulator shares the runner's network stack. It logs request metadata
+      # only.
+      - name: Start the mock provider
+        run: |
+          mkdir -p "$DIAGNOSTICS_PATH"
+          nohup python3 .github/scripts/mock-openai-server.py \
+            --host 127.0.0.1 --port 8765 \
+            --log "$DIAGNOSTICS_PATH/mock-provider-requests.jsonl" \
+            > "$DIAGNOSTICS_PATH/mock-provider.log" 2>&1 &
+          echo "MOCK_PROVIDER_PID=$!" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/healthz; then
+              echo
+              echo "The mock provider is up after $attempt check(s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The mock provider did not answer its health check"
+          cat "$DIAGNOSTICS_PATH/mock-provider.log"
+          exit 1
+
+      - name: Test
+        timeout-minutes: 15
+        run: |
+          mkdir -p "$DIAGNOSTICS_PATH"
+          xcodebuild test-without-building \
             -project ios/FreeFlow.xcodeproj \
             -scheme FreeFlow \
             -configuration Debug \
@@ -91,14 +148,123 @@ jobs:
             -derivedDataPath "$DERIVED_DATA_PATH" \
             -resultBundlePath "$RESULT_BUNDLE_PATH" \
             -parallel-testing-enabled NO \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY=- \
-            DEVELOPMENT_TEAM=
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 420 \
+            2>&1 | tee "$DIAGNOSTICS_PATH/xcodebuild-test.log"
+
+      - name: Report the UI tests' findings
+        if: always()
+        run: |
+          log="$DIAGNOSTICS_PATH/xcodebuild-test.log"
+          if [ ! -f "$log" ]; then
+            echo "No test log at $log"
+            exit 0
+          fi
+          {
+            echo "### FreeFlow UI test findings"
+            echo
+            grep -h 'FREEFLOW-E2E:' "$log" | sed 's/^.*FREEFLOW-E2E: /- /' | awk '!seen[$0]++' || echo "- (none reported)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if grep -q 'CI setup did NOT take effect' "$log"; then
+            echo "::warning::The simulator setup did not enable the FreeFlow keyboard or Full Access; the UI tests fell back to the Settings app"
+          fi
+
+      - name: Summarize test results
+        if: always()
+        run: |
+          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
+            echo "No result bundle at $RESULT_BUNDLE_PATH"
+            exit 0
+          fi
+          xcrun xcresulttool get test-results tests --path "$RESULT_BUNDLE_PATH" \
+            || echo "::warning::Could not summarize $RESULT_BUNDLE_PATH"
+
+      - name: Export test attachments
+        if: always()
+        run: |
+          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
+            echo "No result bundle at $RESULT_BUNDLE_PATH"
+            exit 0
+          fi
+          mkdir -p "$ATTACHMENTS_PATH"
+          xcrun xcresulttool export attachments \
+            --path "$RESULT_BUNDLE_PATH" \
+            --output-path "$ATTACHMENTS_PATH"
+          # Rename the exported files from UUIDs to the names the tests gave
+          # them, such as testName-03-freeflow-keyboard.png.
+          python3 - "$ATTACHMENTS_PATH" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          folder = sys.argv[1]
+          manifest_path = os.path.join(folder, "manifest.json")
+          with open(manifest_path) as file:
+              manifest = json.load(file)
+          taken = set()
+          for test in manifest:
+              for attachment in test.get("attachments", []):
+                  exported = attachment.get("exportedFileName")
+                  suggested = attachment.get("suggestedHumanReadableName") or exported
+                  if not exported or not os.path.exists(os.path.join(folder, exported)):
+                      continue
+                  name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}(?=\.[^.]+$)", "", suggested)
+                  stem, extension = os.path.splitext(name)
+                  candidate, number = name, 2
+                  while candidate in taken:
+                      candidate = f"{stem}-{number}{extension}"
+                      number += 1
+                  taken.add(candidate)
+                  os.rename(os.path.join(folder, exported), os.path.join(folder, candidate))
+                  attachment["exportedFileName"] = candidate
+          with open(manifest_path, "w") as file:
+              json.dump(manifest, file, indent=2)
+          PY
+          ls -la "$ATTACHMENTS_PATH"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-test-results
+          path: |
+            ${{ env.ATTACHMENTS_PATH }}
+            ${{ env.RESULT_BUNDLE_PATH }}
+            ${{ env.DIAGNOSTICS_PATH }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Show mock provider requests
+        if: always()
+        run: |
+          if [ -z "${MOCK_PROVIDER_PID:-}" ]; then
+            echo "The mock provider was not started"
+            exit 0
+          fi
+          curl -fsS http://127.0.0.1:8765/debug/requests | python3 -m json.tool \
+            || echo "::warning::Could not read the mock provider's request log"
+          echo "::group::Mock provider output"
+          cat "$DIAGNOSTICS_PATH/mock-provider.log" || true
+          echo "::endgroup::"
+          kill "$MOCK_PROVIDER_PID" 2>/dev/null || true
+
+      - name: Show the simulator's keyboard and Full Access state
+        if: always()
+        timeout-minutes: 5
+        run: |
+          if [ -z "${SIMULATOR_UDID:-}" ] || [ -z "${FREEFLOW_APP_ID:-}" ]; then
+            echo "The simulator was never prepared, so there is no keyboard state to show"
+            exit 0
+          fi
+          .github/scripts/prepare-ios-simulator.sh report "$SIMULATOR_UDID" \
+            "$FREEFLOW_APP_ID" "$FREEFLOW_KEYBOARD_ID"
 
       - name: Inspect app bundle and entitlements
         if: always()
         run: |
-          app="$DERIVED_DATA_PATH/Build/Products/Debug-iphonesimulator/FreeFlow.app"
+          app="$APP_PATH"
           appex="$app/PlugIns/FreeFlowKeyboard.appex"
           if [ ! -d "$app" ]; then
             echo "No app bundle at $app"
@@ -112,7 +278,7 @@ jobs:
             # Xcode signs the app only after embedding the keyboard, so an
             # unsigned app means the build stopped early, not a project error.
             if [ ! -f "$app/_CodeSignature/CodeResources" ]; then
-              echo "FreeFlow.app was not signed, so the build stopped before embedding the keyboard. See the Build and test step."
+              echo "FreeFlow.app was not signed, so the build stopped before embedding the keyboard. See the Build for testing step."
               exit 0
             fi
             echo "::error::FreeFlowKeyboard.appex is not embedded in FreeFlow.app/PlugIns"
@@ -123,6 +289,16 @@ jobs:
             echo "::group::Built Info.plist: $(basename "$bundle")"
             plutil -p "$bundle/Info.plist" || true
             echo "::endgroup::"
+          done
+
+          # Whether each bundle that talks to the mock provider carries App
+          # Transport Security exceptions.
+          runner="$(dirname "$app")/FreeFlowUITests-Runner.app"
+          for bundle in "$app" "$appex" "$runner"; do
+            [ -f "$bundle/Info.plist" ] || continue
+            echo "NSAppTransportSecurity in $(basename "$bundle"):"
+            plutil -extract NSAppTransportSecurity json -o - "$bundle/Info.plist" 2>/dev/null || echo "  (none)"
+            echo
           done
 
           for bundle in "$app" "$appex"; do
@@ -163,40 +339,6 @@ jobs:
           PY
             echo "::endgroup::"
           done
-
-      - name: Summarize test results
-        if: always()
-        run: |
-          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
-            echo "No result bundle at $RESULT_BUNDLE_PATH"
-            exit 0
-          fi
-          xcrun xcresulttool get test-results tests --path "$RESULT_BUNDLE_PATH" \
-            || echo "::warning::Could not summarize $RESULT_BUNDLE_PATH"
-
-      - name: Export test attachments
-        if: always()
-        run: |
-          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
-            echo "No result bundle at $RESULT_BUNDLE_PATH"
-            exit 0
-          fi
-          mkdir -p "$ATTACHMENTS_PATH"
-          xcrun xcresulttool export attachments \
-            --path "$RESULT_BUNDLE_PATH" \
-            --output-path "$ATTACHMENTS_PATH"
-          ls -la "$ATTACHMENTS_PATH"
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ios-test-results
-          path: |
-            ${{ env.ATTACHMENTS_PATH }}
-            ${{ env.RESULT_BUNDLE_PATH }}
-          if-no-files-found: warn
-          retention-days: 14
 
   # Pull requests already run check.yml. Work-in-progress branch pushes don't,
   # so run the same macOS checks here: the iOS targets share Sources/ files and
