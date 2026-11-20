@@ -9,6 +9,29 @@
 /* Begin PBXBuildFile section */
 		FF1000000000000000000601 /* TranscriptTextCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000106 /* TranscriptTextCore.swift */; };
 		FF1000000000000000000602 /* TranscriptTextCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000106 /* TranscriptTextCore.swift */; };
+		FF1000000000000000000604 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000107 /* TranscriptionService.swift */; };
+		FF1000000000000000000605 /* LLMAPITransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000108 /* LLMAPITransport.swift */; };
+		FF1000000000000000000606 /* TemperatureCapabilityCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000109 /* TemperatureCapabilityCache.swift */; };
+		FF1000000000000000000607 /* PostProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000110 /* PostProcessingService.swift */; };
+		FF1000000000000000000608 /* AppContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000111 /* AppContext.swift */; };
+		FF1000000000000000000609 /* ContextInferenceFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000112 /* ContextInferenceFailure.swift */; };
+		FF1000000000000000000610 /* LLMCooldownManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000113 /* LLMCooldownManager.swift */; };
+		FF1000000000000000000611 /* ModelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000114 /* ModelConfiguration.swift */; };
+		FF1000000000000000000612 /* TranscriptionErrorPresentationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */; };
+		FF1000000000000000000613 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000116 /* NetworkMonitor.swift */; };
+		FF1000000000000000000614 /* LiveAudioLevelNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */; };
+		FF1000000000000000000615 /* APIConfigurationDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000118 /* APIConfigurationDraft.swift */; };
+		FF1000000000000000000616 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000107 /* TranscriptionService.swift */; };
+		FF1000000000000000000617 /* LLMAPITransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000108 /* LLMAPITransport.swift */; };
+		FF1000000000000000000618 /* TemperatureCapabilityCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000109 /* TemperatureCapabilityCache.swift */; };
+		FF1000000000000000000619 /* PostProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000110 /* PostProcessingService.swift */; };
+		FF1000000000000000000620 /* AppContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000111 /* AppContext.swift */; };
+		FF1000000000000000000621 /* ContextInferenceFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000112 /* ContextInferenceFailure.swift */; };
+		FF1000000000000000000622 /* LLMCooldownManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000113 /* LLMCooldownManager.swift */; };
+		FF1000000000000000000623 /* ModelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000114 /* ModelConfiguration.swift */; };
+		FF1000000000000000000624 /* TranscriptionErrorPresentationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */; };
+		FF1000000000000000000625 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000116 /* NetworkMonitor.swift */; };
+		FF1000000000000000000626 /* LiveAudioLevelNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */; };
 		FF1000000000000000000603 /* FreeFlowKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000102 /* FreeFlowKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -57,6 +80,18 @@
 		FF1000000000000000000104 /* FreeFlowUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FreeFlowUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FF1000000000000000000105 /* FreeFlow.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = FreeFlow.xcconfig; sourceTree = "<group>"; };
 		FF1000000000000000000106 /* TranscriptTextCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptTextCore.swift; sourceTree = "<group>"; };
+		FF1000000000000000000107 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
+		FF1000000000000000000108 /* LLMAPITransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMAPITransport.swift; sourceTree = "<group>"; };
+		FF1000000000000000000109 /* TemperatureCapabilityCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemperatureCapabilityCache.swift; sourceTree = "<group>"; };
+		FF1000000000000000000110 /* PostProcessingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostProcessingService.swift; sourceTree = "<group>"; };
+		FF1000000000000000000111 /* AppContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContext.swift; sourceTree = "<group>"; };
+		FF1000000000000000000112 /* ContextInferenceFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextInferenceFailure.swift; sourceTree = "<group>"; };
+		FF1000000000000000000113 /* LLMCooldownManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMCooldownManager.swift; sourceTree = "<group>"; };
+		FF1000000000000000000114 /* ModelConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelConfiguration.swift; sourceTree = "<group>"; };
+		FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionErrorPresentationCore.swift; sourceTree = "<group>"; };
+		FF1000000000000000000116 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAudioLevelNormalizer.swift; sourceTree = "<group>"; };
+		FF1000000000000000000118 /* APIConfigurationDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIConfigurationDraft.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -181,6 +216,18 @@
 			isa = PBXGroup;
 			children = (
 				FF1000000000000000000106 /* TranscriptTextCore.swift */,
+				FF1000000000000000000118 /* APIConfigurationDraft.swift */,
+				FF1000000000000000000111 /* AppContext.swift */,
+				FF1000000000000000000112 /* ContextInferenceFailure.swift */,
+				FF1000000000000000000108 /* LLMAPITransport.swift */,
+				FF1000000000000000000113 /* LLMCooldownManager.swift */,
+				FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */,
+				FF1000000000000000000114 /* ModelConfiguration.swift */,
+				FF1000000000000000000116 /* NetworkMonitor.swift */,
+				FF1000000000000000000110 /* PostProcessingService.swift */,
+				FF1000000000000000000109 /* TemperatureCapabilityCache.swift */,
+				FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */,
+				FF1000000000000000000107 /* TranscriptionService.swift */,
 			);
 			name = "Shared macOS Sources";
 			path = ../Sources;
@@ -368,6 +415,18 @@
 			buildActionMask = 2147483647;
 			files = (
 				FF1000000000000000000601 /* TranscriptTextCore.swift in Sources */,
+				FF1000000000000000000604 /* TranscriptionService.swift in Sources */,
+				FF1000000000000000000605 /* LLMAPITransport.swift in Sources */,
+				FF1000000000000000000606 /* TemperatureCapabilityCache.swift in Sources */,
+				FF1000000000000000000607 /* PostProcessingService.swift in Sources */,
+				FF1000000000000000000608 /* AppContext.swift in Sources */,
+				FF1000000000000000000609 /* ContextInferenceFailure.swift in Sources */,
+				FF1000000000000000000610 /* LLMCooldownManager.swift in Sources */,
+				FF1000000000000000000611 /* ModelConfiguration.swift in Sources */,
+				FF1000000000000000000612 /* TranscriptionErrorPresentationCore.swift in Sources */,
+				FF1000000000000000000613 /* NetworkMonitor.swift in Sources */,
+				FF1000000000000000000614 /* LiveAudioLevelNormalizer.swift in Sources */,
+				FF1000000000000000000615 /* APIConfigurationDraft.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -376,6 +435,17 @@
 			buildActionMask = 2147483647;
 			files = (
 				FF1000000000000000000602 /* TranscriptTextCore.swift in Sources */,
+				FF1000000000000000000616 /* TranscriptionService.swift in Sources */,
+				FF1000000000000000000617 /* LLMAPITransport.swift in Sources */,
+				FF1000000000000000000618 /* TemperatureCapabilityCache.swift in Sources */,
+				FF1000000000000000000619 /* PostProcessingService.swift in Sources */,
+				FF1000000000000000000620 /* AppContext.swift in Sources */,
+				FF1000000000000000000621 /* ContextInferenceFailure.swift in Sources */,
+				FF1000000000000000000622 /* LLMCooldownManager.swift in Sources */,
+				FF1000000000000000000623 /* ModelConfiguration.swift in Sources */,
+				FF1000000000000000000624 /* TranscriptionErrorPresentationCore.swift in Sources */,
+				FF1000000000000000000625 /* NetworkMonitor.swift in Sources */,
+				FF1000000000000000000626 /* LiveAudioLevelNormalizer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

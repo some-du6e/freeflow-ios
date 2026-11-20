@@ -16,11 +16,13 @@ TEST_CONTEXT_HARNESS = $(BUILD_DIR)/ContextCaptureHarness.swift
 TEST_DISPATCH_HARNESS = $(BUILD_DIR)/AppTextInsertionDispatchHarness.swift
 TEST_PRODUCTION_SOURCES = \
 	Sources/APIConfigurationDraft.swift \
+	Sources/AppContext.swift \
 	Sources/AppContextService.swift \
 	Sources/AppName.swift \
 	Sources/AppTextInsertionCore.swift \
 	Sources/AppTextInsertionTarget.swift \
 	Sources/ContextInferenceFailure.swift \
+	Sources/LiveAudioLevelNormalizer.swift \
 	Sources/LLMAPITransport.swift \
 	Sources/LLMCooldownManager.swift \
 	Sources/ModelConfiguration.swift \
@@ -37,6 +39,12 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
 	Sources/ShortcutCore/ShortcutModels.swift
+# Foundation-only helpers shared by the iOS app and keyboard. The iOS targets
+# compile them through the ios/Shared synchronized folder; the macOS test
+# runner compiles them too so their tests run in `make test`. Never add these
+# to SOURCES: they are not part of the macOS app.
+IOS_PORTABLE_SOURCES = $(sort $(wildcard ios/Shared/Core/*.swift ios/Shared/Core/*/*.swift))
+TEST_PRODUCTION_SOURCES += $(IOS_PORTABLE_SOURCES)
 TEST_SOURCES = $(shell find Tests -name '*.swift' -type f | LC_ALL=C sort)
 SHELL_SCRIPTS = $(shell find .github/scripts .agents/skills -name '*.sh' -type f | LC_ALL=C sort)
 YAML_FILES = $(shell find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)

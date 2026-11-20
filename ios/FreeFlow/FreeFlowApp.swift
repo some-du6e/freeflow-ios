@@ -19,7 +19,7 @@ struct ContentView: View {
             Text("Dictate into any app with the FreeFlow keyboard. Try it in the field below.")
                 .foregroundStyle(.secondary)
             TextEditor(text: $draft)
-                .accessibilityIdentifier("testField")
+                .accessibilityIdentifier("freeflow.app.testField")
                 .accessibilityLabel("Test field")
                 .frame(minHeight: 200)
                 .padding(8)

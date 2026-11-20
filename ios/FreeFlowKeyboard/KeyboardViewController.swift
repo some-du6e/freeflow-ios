@@ -25,7 +25,7 @@ final class KeyboardViewController: UIInputViewController {
         configuration.imagePadding = 8
         configuration.cornerStyle = .capsule
         micButton.configuration = configuration
-        micButton.accessibilityIdentifier = "freeflow.mic"
+        micButton.accessibilityIdentifier = "freeflow.keyboard.mic"
         micButton.accessibilityLabel = "Dictate with FreeFlow"
         micButton.addTarget(self, action: #selector(micButtonTapped), for: .touchUpInside)
     }

@@ -198,6 +198,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # Pull requests already run check.yml. Work-in-progress branch pushes don't,
+  # so run the same macOS checks here: the iOS targets share Sources/ files and
+  # ios/Shared/Core helpers with the macOS `make test` runner.
+  macos-check:
+    name: macOS make check (WIP pushes)
+    if: github.event_name == 'push'
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run repository checks
+        run: make check
+
   xcode-27-build:
     name: Build (Xcode 27 preview)
     runs-on: xcode-27

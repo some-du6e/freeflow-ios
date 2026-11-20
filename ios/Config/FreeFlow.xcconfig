@@ -17,6 +17,12 @@ IPHONEOS_DEPLOYMENT_TARGET = 17.0
 TARGETED_DEVICE_FAMILY = 1
 SWIFT_VERSION = 5.0
 SWIFT_TREAT_WARNINGS_AS_ERRORS = YES
+// Match the macOS swiftc build, which shares Sources/ files with these
+// targets: nonisolated by default and no Approachable Concurrency, so
+// shared code has the same isolation on both platforms.
+SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
+SWIFT_APPROACHABLE_CONCURRENCY = NO
+SWIFT_STRICT_CONCURRENCY = minimal
 
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM =
