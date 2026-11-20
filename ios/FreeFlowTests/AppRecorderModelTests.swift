@@ -1,0 +1,440 @@
+import XCTest
+@testable import FreeFlow
+
+final class AppRecorderModelTests: XCTestCase {
+    // MARK: Keyboard handoff
+
+    @MainActor
+    func testHandoffSavesPendingDictationAndWritesHandedOffHistory() async throws {
+        let spy = AppRecorderSpy()
+        let session = UUID()
+        spy.awaitedSessionID = session
+        spy.results = [.success(appSyntheticResult(text: "Hello from the synthetic test.", pressEnter: true))]
+        let model = RecorderModel(mode: .handoff(sessionID: session), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        XCTAssertEqual(model.phase, .starting)
+        XCTAssertEqual(model.phase.accessibilityName, "starting")
+        XCTAssertEqual(spy.microphoneMarkedGranted, 1)
+
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        let isRecording = await appWaitUntil { model.phase == .recording }
+        XCTAssertTrue(isRecording)
+
+        recorder.onLevel?(0.6)
+        let showsLevel = await appWaitUntil { model.level == 0.6 }
+        XCTAssertTrue(showsLevel)
+
+        model.stop()
+        XCTAssertEqual(recorder.stopCount, 1)
+        let finished = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+
+        XCTAssertEqual(spy.pending.count, 1)
+        let pending = try XCTUnwrap(spy.pending.first)
+        XCTAssertEqual(pending.sessionID, session)
+        XCTAssertEqual(pending.text, "Hello from the synthetic test.")
+        XCTAssertTrue(pending.pressEnter)
+        XCTAssertEqual(pending.createdAt, spy.now)
+        XCTAssertTrue(pending.isFresh(now: spy.now))
+
+        let entry = try XCTUnwrap(spy.history.first)
+        XCTAssertEqual(spy.history.count, 1)
+        XCTAssertEqual(entry.status, .handedOff)
+        XCTAssertEqual(entry.source, .app)
+        XCTAssertEqual(entry.text, "Hello from the synthetic test.")
+        XCTAssertEqual(entry.rawTranscript, "synthetic raw words")
+        XCTAssertEqual(entry.route, .cleanup)
+        XCTAssertEqual(entry.durationSeconds, 1.5, accuracy: 0.001)
+
+        // The audio is deleted once processed, and the keyboard is still
+        // waiting for the session, so it must not be cleared.
+        XCTAssertEqual(spy.removedFiles, [recorder.startedURL].compactMap { $0 })
+        model.close()
+        XCTAssertEqual(spy.awaitedSessionID, session)
+    }
+
+    @MainActor
+    func testHandoffWithNothingToInsertStillAnswersTheKeyboard() async throws {
+        let spy = AppRecorderSpy()
+        let session = UUID()
+        spy.results = [.success(appSyntheticResult(raw: "", text: "", route: .empty))]
+        let model = RecorderModel(mode: .handoff(sessionID: session), dependencies: spy.dependencies())
+
+        try await recordAndStop(model, spy: spy)
+        let finished = await appWaitUntil { model.phase.accessibilityName == "nothing-to-insert" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+        XCTAssertEqual(spy.pending.map(\.sessionID), [session])
+        XCTAssertEqual(spy.pending.first?.text, "")
+        XCTAssertEqual(spy.history.first?.status, .nothingToInsert)
+    }
+
+    @MainActor
+    func testRawFallbackIsStillHandedOff() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult(text: "synthetic raw words", route: .cleanup, usedRawFallback: true))]
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        try await recordAndStop(model, spy: spy)
+        _ = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertEqual(spy.history.first?.status, .handedOff)
+        guard case .finished(let outcome) = model.phase else {
+            return XCTFail("phase is \(model.phase)")
+        }
+        XCTAssertTrue(outcome.usedRawFallback)
+        XCTAssertTrue(outcome.handedOff)
+    }
+
+    @MainActor
+    func testCancellingAHandoffTellsTheKeyboardToStopWaiting() async throws {
+        let spy = AppRecorderSpy()
+        let session = UUID()
+        spy.awaitedSessionID = session
+        let model = RecorderModel(mode: .handoff(sessionID: session), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        model.close()
+
+        XCTAssertEqual(recorder.cancelCount, 1)
+        XCTAssertNil(spy.awaitedSessionID)
+        XCTAssertTrue(spy.pending.isEmpty)
+        XCTAssertTrue(spy.history.isEmpty)
+    }
+
+    @MainActor
+    func testCancellingLeavesANewerAwaitedSessionAlone() {
+        let spy = AppRecorderSpy()
+        let newer = UUID()
+        spy.awaitedSessionID = newer
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        model.close()
+
+        XCTAssertEqual(spy.awaitedSessionID, newer)
+    }
+
+    @MainActor
+    func testAdoptedSessionReceivesTheResult() async throws {
+        let spy = AppRecorderSpy()
+        let newer = UUID()
+        spy.results = [.success(appSyntheticResult())]
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        model.adoptHandoffSession(newer)
+        try await recordAndStop(model, spy: spy, alreadyStarted: true)
+
+        _ = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertEqual(spy.pending.map(\.sessionID), [newer])
+    }
+
+    // MARK: In-app
+
+    @MainActor
+    func testInAppResultIsInsertedIntoTheTestField() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult(text: "Typed into the field.", pressEnter: true))]
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+        let insertions = AppInsertionLog()
+        model.onInsertIntoTestField = { text, pressEnter in
+            insertions.record(text, pressEnter: pressEnter)
+        }
+
+        try await recordAndStop(model, spy: spy)
+        let finished = await appWaitUntil { model.phase.accessibilityName == "done" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+
+        XCTAssertEqual(insertions.texts, ["Typed into the field."])
+        XCTAssertEqual(insertions.pressEnters, [true])
+        XCTAssertTrue(spy.pending.isEmpty)
+        XCTAssertEqual(spy.history.first?.status, .inserted)
+        XCTAssertEqual(spy.history.first?.source, .app)
+    }
+
+    @MainActor
+    func testInAppRawFallbackIsRecorded() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult(usedRawFallback: true))]
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+        model.onInsertIntoTestField = { _, _ in }
+
+        try await recordAndStop(model, spy: spy)
+        _ = await appWaitUntil { model.phase.accessibilityName == "done" }
+        XCTAssertEqual(spy.history.first?.status, .rawFallback)
+    }
+
+    @MainActor
+    func testInAppWithoutADestinationIsNotInserted() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult())]
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        try await recordAndStop(model, spy: spy)
+        _ = await appWaitUntil { model.phase.accessibilityName == "done" }
+        XCTAssertEqual(spy.history.first?.status, .notInserted)
+    }
+
+    // MARK: Gating
+
+    @MainActor
+    func testMissingConfigurationNeedsSetupAndNeverRecords() {
+        let spy = AppRecorderSpy()
+        spy.configuration = nil
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+
+        XCTAssertEqual(model.phase, .setupNeeded)
+        XCTAssertEqual(model.phase.accessibilityName, "setup-needed")
+        XCTAssertTrue(spy.recorders.isEmpty)
+    }
+
+    @MainActor
+    func testUndeterminedPermissionWaitsForContinueThenRecords() async throws {
+        let spy = AppRecorderSpy(microphone: AppFakeMicrophone(permission: .undetermined, grantsOnRequest: true))
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        XCTAssertEqual(model.phase, .needsPermission)
+        XCTAssertEqual(model.phase.accessibilityName, "needs-permission")
+        XCTAssertTrue(spy.recorders.isEmpty)
+        XCTAssertEqual(spy.microphone.requestCount, 0, "The prompt waits for the Continue button")
+
+        await model.requestMicrophonePermission()
+
+        XCTAssertEqual(spy.microphone.requestCount, 1)
+        XCTAssertEqual(spy.microphoneMarkedGranted, 1)
+        XCTAssertEqual(model.phase, .starting)
+        XCTAssertEqual(spy.recorders.count, 1)
+    }
+
+    @MainActor
+    func testDeniedPermissionPromptShowsOpenSettingsState() async {
+        let spy = AppRecorderSpy(microphone: AppFakeMicrophone(permission: .undetermined, grantsOnRequest: false))
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        await model.requestMicrophonePermission()
+
+        XCTAssertEqual(model.phase, .permissionDenied)
+        XCTAssertEqual(model.phase.accessibilityName, "permission-denied")
+        XCTAssertEqual(spy.microphoneMarkedGranted, 0)
+    }
+
+    @MainActor
+    func testPreviouslyDeniedPermissionDoesNotPrompt() {
+        let spy = AppRecorderSpy(microphone: AppFakeMicrophone(permission: .denied))
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+
+        XCTAssertEqual(model.phase, .permissionDenied)
+        XCTAssertEqual(spy.microphone.requestCount, 0)
+    }
+
+    // MARK: Failures
+
+    @MainActor
+    func testTranscriptionErrorShowsTheMacOSMessageAndCanRetry() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [
+            .failure(URLError(.notConnectedToInternet)),
+            .success(appSyntheticResult(text: "Second try.")),
+        ]
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        try await recordAndStop(model, spy: spy)
+        let failed = await appWaitUntil { model.phase.accessibilityName == "error" }
+        XCTAssertTrue(failed, "phase is \(model.phase)")
+        XCTAssertEqual(model.phase, .failed(message: "No internet — check connection", retry: .processAgain))
+        XCTAssertEqual(spy.history.first?.status, .failed)
+        XCTAssertEqual(spy.history.first?.errorMessage, "No internet — check connection")
+        XCTAssertTrue(spy.removedFiles.isEmpty, "The recording is kept for Try Again")
+
+        model.retry()
+        let retried = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertTrue(retried, "phase is \(model.phase)")
+        XCTAssertEqual(spy.processedURLs.count, 2)
+        XCTAssertEqual(spy.processedURLs.first, spy.processedURLs.last)
+        XCTAssertEqual(spy.pending.first?.text, "Second try.")
+        XCTAssertEqual(spy.removedFiles.count, 1)
+    }
+
+    @MainActor
+    func testRecordingWithNoAudioFailsWithRecordAgain() async throws {
+        let spy = AppRecorderSpy()
+        spy.nextRecorderRecordsNothing = true
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        _ = await appWaitUntil { model.phase == .recording }
+        model.stop()
+
+        XCTAssertEqual(model.phase, .failed(message: RecorderModel.noAudioRecordedMessage, retry: .recordAgain))
+        XCTAssertTrue(spy.processedURLs.isEmpty)
+
+        spy.nextRecorderRecordsNothing = false
+        model.retry()
+        XCTAssertEqual(model.phase, .starting)
+        XCTAssertEqual(spy.recorders.count, 2)
+    }
+
+    @MainActor
+    func testStartFailureIsReported() {
+        let spy = AppRecorderSpy()
+        spy.nextRecorderStartError = AppAudioRecorderError.noInputAvailable
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+
+        XCTAssertEqual(model.phase, .failed(message: RecorderModel.startFailedMessage, retry: .recordAgain))
+    }
+
+    @MainActor
+    func testNoAudioWithinTheStartTimeoutFails() async throws {
+        let spy = AppRecorderSpy()
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies(startTimeout: 0.05))
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        let failed = await appWaitUntil { model.phase.accessibilityName == "error" }
+
+        XCTAssertTrue(failed, "phase is \(model.phase)")
+        XCTAssertEqual(model.phase, .failed(message: RecorderModel.noAudioBuffersMessage, retry: .recordAgain))
+        XCTAssertEqual(recorder.cancelCount, 1)
+    }
+
+    @MainActor
+    func testFirstAudioCancelsTheStartTimeout() async throws {
+        let spy = AppRecorderSpy()
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies(startTimeout: 0.2))
+
+        model.startIfNeeded()
+        try XCTUnwrap(spy.lastRecorder).onFirstAudio?()
+        _ = await appWaitUntil { model.phase == .recording }
+        try await Task.sleep(nanoseconds: 400_000_000)
+
+        XCTAssertEqual(model.phase, .recording)
+    }
+
+    // MARK: Leaving the app
+
+    @MainActor
+    func testLeavingTheAppStopsAndProcesses() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult())]
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        _ = await appWaitUntil { model.phase == .recording }
+
+        model.appDidEnterBackground()
+
+        XCTAssertEqual(recorder.stopCount, 1)
+        let finished = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+    }
+
+    @MainActor
+    func testSystemInterruptionStopsAndProcesses() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult())]
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        _ = await appWaitUntil { model.phase == .recording }
+
+        recorder.onInterruption?()
+
+        let finished = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+        XCTAssertEqual(recorder.stopCount, 1)
+    }
+
+    @MainActor
+    func testRecordingStopsAtTheMaximumDuration() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult())]
+        let model = RecorderModel(
+            mode: .handoff(sessionID: UUID()),
+            dependencies: spy.dependencies(maximumDuration: 0.1)
+        )
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+
+        let finished = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+        XCTAssertEqual(recorder.stopCount, 1)
+    }
+
+    @MainActor
+    func testLateCallbacksAfterCloseAreIgnored() async throws {
+        let spy = AppRecorderSpy()
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies())
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        model.close()
+        recorder.onFirstAudio?()
+        recorder.onLevel?(0.9)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(model.phase, .starting)
+        XCTAssertEqual(model.level, 0)
+    }
+
+    // MARK: Presentation
+
+    @MainActor
+    func testElapsedTimeFormatting() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(RecorderView.elapsedText(since: start, now: start), "0:00")
+        XCTAssertEqual(RecorderView.elapsedText(since: start, now: start.addingTimeInterval(65.4)), "1:05")
+        XCTAssertEqual(RecorderView.elapsedText(since: nil, now: start), "0:00")
+    }
+
+    func testOutcomeTreatsPressEnterAsSomethingToInsert() {
+        let enterOnly = RecorderOutcome(text: "", rawTranscript: "press enter", pressEnter: true, route: .empty, usedRawFallback: false, handedOff: true)
+        XCTAssertFalse(enterOnly.isNothingToInsert)
+        XCTAssertEqual(RecorderPhase.finished(enterOnly).accessibilityName, "handed-off")
+
+        let blank = RecorderOutcome(text: "  ", rawTranscript: "", pressEnter: false, route: .empty, usedRawFallback: false, handedOff: false)
+        XCTAssertTrue(blank.isNothingToInsert)
+        XCTAssertEqual(RecorderPhase.finished(blank).accessibilityName, "nothing-to-insert")
+    }
+
+    func testAccessibilityNamesForEveryPhase() {
+        XCTAssertEqual(RecorderPhase.idle.accessibilityName, "idle")
+        XCTAssertEqual(RecorderPhase.requestingPermission.accessibilityName, "needs-permission")
+        XCTAssertEqual(RecorderPhase.recording.accessibilityName, "recording")
+        XCTAssertEqual(RecorderPhase.processing.accessibilityName, "processing")
+        XCTAssertEqual(RecorderPhase.failed(message: "x", retry: .recordAgain).accessibilityName, "error")
+        let done = RecorderOutcome(text: "Hi.", rawTranscript: "hi", pressEnter: false, route: .cleanup, usedRawFallback: false, handedOff: false)
+        XCTAssertEqual(RecorderPhase.finished(done).accessibilityName, "done")
+    }
+
+    // MARK: Helpers
+
+    @MainActor
+    private func recordAndStop(_ model: RecorderModel, spy: AppRecorderSpy, alreadyStarted: Bool = false) async throws {
+        if !alreadyStarted {
+            model.startIfNeeded()
+        }
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        let isRecording = await appWaitUntil { model.phase == .recording }
+        XCTAssertTrue(isRecording, "phase is \(model.phase)")
+        model.stop()
+    }
+}

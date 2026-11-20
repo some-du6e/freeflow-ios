@@ -2,33 +2,28 @@ import SwiftUI
 
 @main
 struct FreeFlowApp: App {
+    @StateObject private var model: FreeFlowAppModel
+
+    init() {
+        // UI tests configure the shared state before any UI exists, so the
+        // keyboard process sees the same settings (DESIGN §5.2).
+        #if DEBUG
+        let microphoneFlagIsOverridden = FreeFlowUITestHooks.applyLaunchArguments().setsMicrophoneFlag
+        #else
+        let microphoneFlagIsOverridden = false
+        #endif
+        NetworkMonitor.shared.start()
+        AppAudioRecorder.removeLeftoverRecordings()
+        _model = StateObject(wrappedValue: FreeFlowAppModel(
+            environment: .live,
+            microphoneFlagIsOverridden: microphoneFlagIsOverridden
+        ))
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            FreeFlowRootView()
+                .environmentObject(model)
         }
-    }
-}
-
-struct ContentView: View {
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("FreeFlow")
-                .font(.largeTitle.bold())
-            Text("Dictate into any app with the FreeFlow keyboard. Try it in the field below.")
-                .foregroundStyle(.secondary)
-            TextEditor(text: $draft)
-                .accessibilityIdentifier("freeflow.app.testField")
-                .accessibilityLabel("Test field")
-                .frame(minHeight: 200)
-                .padding(8)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.secondary.opacity(0.4))
-                }
-            Spacer(minLength: 0)
-        }
-        .padding()
     }
 }
