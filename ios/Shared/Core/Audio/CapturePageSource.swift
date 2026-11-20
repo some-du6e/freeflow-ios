@@ -118,7 +118,7 @@ function ffBase64(u8) {
 // can't run. It repeats 0.3 s at -23 dBFS RMS and 0.2 s at -63 dBFS, at a 48 kHz device rate.
 function ffSyntheticSource(onBlock) {
   const RATE = 48000, FRAMES = 2048, HZ = 440, CYCLE = 24000, LOUD_FRAMES = 14400;
-  const LOUD = 0.1, QUIET = 0.001, MAX_BLOCKS_PER_TICK = 12;
+  const LOUD = 0.1, QUIET = 0.001, MAX_BLOCKS_PER_TICK = 12, MAX_DRAIN_BLOCKS = 600;
   let made = 0, startedAt = 0, timer = 0, running = false;
   function block() {
     const x = new Float32Array(FRAMES);
@@ -136,6 +136,11 @@ function ffSyntheticSource(onBlock) {
   return {
     rate: RATE,
     start() { running = true; startedAt = performance.now(); pump(); timer = setInterval(pump, 20); },
+    // Emits every block still due, so a page that stalled delivers the time that really passed.
+    drain() {
+      const due = (performance.now() - startedAt) * RATE / 1000;
+      for (let k = 0; running && k < MAX_DRAIN_BLOCKS && made <= due; k++) onBlock(block());
+    },
     stop() { running = false; clearInterval(timer); },
   };
 }
@@ -286,8 +291,15 @@ function ffSyntheticSource(onBlock) {
     const s = S;
     if (!s || !matches(s, sid) || s.stopping) return;
     if (s.phase !== 'running') { end(s, 'stopped-before-audio'); return; }
+    if (s.source) {
+      s.source.drain();
+      s.source.stop();
+      if (S !== s) return;
+      s.stopping = true; s.phase = 'stopping';
+      finish(s, new Float32Array(0), []);
+      return;
+    }
     s.stopping = true; s.phase = 'stopping';
-    if (s.source) { s.source.stop(); finish(s, new Float32Array(0), []); return; }
     // The next callback flushes and ends; this covers a callback that never comes.
     s.stopTimer = setTimeout(() => { if (S === s) finish(s, new Float32Array(0), []); }, STOP_GRACE_MS);
   }

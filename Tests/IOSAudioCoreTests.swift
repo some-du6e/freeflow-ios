@@ -36,6 +36,7 @@ enum IOSAudioCoreTests {
         testJavaScriptStopTimeoutCancelAndStaleSessions()
         testJavaScriptFailures()
         testJavaScriptSyntheticSource()
+        testJavaScriptSyntheticSourceCatchesUpAfterAStall()
         testJavaScriptInterruptions()
     }
 
@@ -865,6 +866,23 @@ enum IOSAudioCoreTests {
         }
         let loud = samples[0..<4_000]
         TestSupport.expect(goertzel(loud, frequency: 440) > 1_000 * goertzel(loud, frequency: 1_000), "The synthetic source is a 440 Hz tone")
+        page.expectNoExceptions()
+    }
+
+    /// A synthetic session whose page stalls before stop() still delivers the time that passed,
+    /// so a slow runner can't shrink a test recording below a provider's minimum length.
+    private static func testJavaScriptSyntheticSourceCatchesUpAfterAStall() {
+        let page = JSCapturePage()
+        page.evaluate("ffCapture.start({sid: 9, synthetic: true}); 0")
+        for _ in 0..<5 {
+            page.evaluate("__advance(20); 0")
+        }
+        page.evaluate("__now += 900; 0") // the page stalls: no timer runs
+        page.evaluate("ffCapture.stop(9); 0")
+        let frames = page.native.chunks.reduce(0) { $0 + $1.frameCount }
+        TestSupport.expect((15_500...17_500).contains(frames), "A stalled synthetic session must deliver about 1 s, got \(frames) frames")
+        TestSupport.expectEqual(page.native.messages.last, .ended(session: 9, reason: "stopped", frames: frames))
+        TestSupport.expectEqual(page.native.chunks.map(\.sequence), Array(0..<page.native.chunks.count))
         page.expectNoExceptions()
     }
 
