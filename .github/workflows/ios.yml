@@ -50,7 +50,7 @@ jobs:
         run: |
           xcodebuild -showBuildSettings -json \
             -project ios/FreeFlow.xcodeproj \
-            -scheme FreeFlow \
+            -alltargets \
             -configuration Debug \
             -sdk iphonesimulator \
             CODE_SIGN_STYLE=Manual \
@@ -60,7 +60,10 @@ jobs:
                 PRODUCT_BUNDLE_IDENTIFIER, IPHONEOS_DEPLOYMENT_TARGET, SWIFT_VERSION,
                 TARGETED_DEVICE_FAMILY, MARKETING_VERSION, CURRENT_PROJECT_VERSION,
                 SWIFT_TREAT_WARNINGS_AS_ERRORS, CODE_SIGN_STYLE, CODE_SIGN_IDENTITY,
-                DEVELOPMENT_TEAM, CODE_SIGN_ENTITLEMENTS, INFOPLIST_FILE, ENABLE_DEBUG_DYLIB})}'
+                DEVELOPMENT_TEAM, AppIdentifierPrefix, CODE_SIGN_ENTITLEMENTS,
+                INFOPLIST_FILE, APPLICATION_EXTENSION_API_ONLY, LD_RUNPATH_SEARCH_PATHS,
+                TEST_HOST, TEST_TARGET_NAME, ENABLE_DEBUG_DYLIB})}' \
+            || echo "::warning::Could not show build settings"
 
       - name: Boot simulator
         run: |
@@ -109,6 +112,12 @@ jobs:
             echo "::error::FreeFlowKeyboard.appex is not embedded in FreeFlow.app/PlugIns"
             exit 1
           fi
+
+          for bundle in "$app" "$appex"; do
+            echo "::group::Built Info.plist: $(basename "$bundle")"
+            plutil -p "$bundle/Info.plist" || true
+            echo "::endgroup::"
+          done
 
           for bundle in "$app" "$appex"; do
             echo "::group::Code signature entitlements: $(basename "$bundle")"
@@ -182,3 +191,38 @@ jobs:
             ${{ env.RESULT_BUNDLE_PATH }}
           if-no-files-found: warn
           retention-days: 14
+
+  xcode-27-build:
+    name: Build (Xcode 27 preview)
+    runs-on: xcode-27
+    # The xcode-27 image is a preview. Report breakage without failing the run.
+    continue-on-error: true
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Uses the image's default Xcode 27, since preview images change weekly.
+      - name: Show toolchain and simulators
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Build app, keyboard, and tests
+        run: |
+          xcodebuild build-for-testing \
+            -project ios/FreeFlow.xcodeproj \
+            -scheme FreeFlow \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build/ios/DerivedData \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=
