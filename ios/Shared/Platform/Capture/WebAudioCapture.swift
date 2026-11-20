@@ -316,16 +316,12 @@ final class WebAudioCapture: NSObject {
     /// Ends any session and reloads the page, as after WebKit's content process exits.
     func webContentProcessDidTerminate() {
         Self.log.error("Capture web content process terminated")
-        let previous = state
         isPageLoaded = false
         isPageLoading = false
         if let session {
             fail(session, .pageUnavailable, cancellingPage: false)
         }
-        if isAttached {
-            loadPage()
-        }
-        updateState(from: previous)
+        reloadPage()
     }
 
     // MARK: Page
@@ -390,10 +386,13 @@ final class WebAudioCapture: NSObject {
     private func startPage(_ session: Session) {
         session.hasStartedPage = true
         let script = "ffCapture.start({sid: \(session.id), synthetic: \(session.isSynthetic), echoCancellation: true}); 0"
-        let id = session.id
-        webView.evaluateJavaScript(script) { [weak self] _, error in
-            guard error != nil else { return }
-            self?.pageCommandFailed(session: id)
+        webView.evaluateJavaScript(script) { [weak self, weak session] _, error in
+            guard let session else { return }
+            if error != nil {
+                self?.pageCommandFailed(session: session.id)
+            } else {
+                session.pageAnsweredStart = true
+            }
         }
     }
 
@@ -448,7 +447,29 @@ final class WebAudioCapture: NSObject {
 
     private func startTimeoutPassed(session id: Int) {
         guard let session, session.id == id, session.phase == .starting else { return }
-        fail(session, isPageLoaded ? .startTimedOut : .pageUnavailable, cancellingPage: true)
+        guard isPageLoaded else {
+            fail(session, .pageUnavailable, cancellingPage: false)
+            return
+        }
+        guard session.pageAnsweredStart else {
+            // The page's web process ran no script at all, so it is stuck or suspended. A fresh
+            // load gives the next start a working page.
+            Self.log.error("Capture page did not answer the start command within \(self.startTimeoutInterval, privacy: .public) s; reloading it")
+            fail(session, .pageUnavailable, cancellingPage: false)
+            reloadPage()
+            return
+        }
+        fail(session, .startTimedOut, cancellingPage: true)
+    }
+
+    private func reloadPage() {
+        let previous = state
+        isPageLoaded = false
+        isPageLoading = false
+        if isAttached {
+            loadPage()
+        }
+        updateState(from: previous)
     }
 
     private func stopTimeoutPassed(session id: Int) {
@@ -596,6 +617,8 @@ final class WebAudioCapture: NSObject {
         var phase = Phase.starting
         /// `ffCapture.start` was sent to the page.
         var hasStartedPage = false
+        /// The page ran the start command (its evaluateJavaScript call completed).
+        var pageAnsweredStart = false
         var watchdog: Task<Void, Never>?
         var stopDeadline: Task<Void, Never>?
 

@@ -160,6 +160,32 @@ final class CaptureTests: XCTestCase {
         }
     }
 
+    /// Named to run first, while WebKit's processes are still cold. A keyboard idles between
+    /// dictations, so an idle page must still answer and start the next capture.
+    @MainActor
+    func testAnIdlePageStillAnswers() async throws {
+        let harness = try await CaptureHarness.make(synthetic: true)
+        defer { harness.tearDown() }
+        try await harness.attachAndWaitForReady()
+        harness.capture.start()
+        try await harness.waitForStart(timeout: 10)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        harness.capture.cancel()
+        try await harness.waitForPageSession(toEndWith: "cancelled")
+
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let probedAt = Date()
+        let answer = try await harness.evaluate("6 * 7", timeout: 15) as? Int
+        harness.record("idle page probe", ["answer": answer ?? -1, "seconds": Date().timeIntervalSince(probedAt)])
+        XCTAssertEqual(answer, 42)
+
+        harness.capture.start()
+        try await harness.waitForStart(timeout: 10)
+        harness.capture.stop()
+        let audio = try await harness.waitForRecording(timeout: 10)
+        XCTAssertGreaterThanOrEqual(audio.frameCount, CaptureRecording.minimumFrameCount)
+    }
+
     @MainActor
     func testCancelDeletesTheRecordingWithoutACallback() async throws {
         let harness = try await CaptureHarness.make(synthetic: true)
@@ -176,17 +202,16 @@ final class CaptureTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path), "Cancel must delete the audio")
         XCTAssertNil(harness.capture.recordingFileURL)
         XCTAssertEqual(harness.capture.state, .ready)
-        try await harness.waitForPageSession(toEndWith: "cancelled")
-        try await Task.sleep(nanoseconds: 500_000_000)
-        XCTAssertTrue(harness.terminalEvents.isEmpty, "Cancel reports nothing: \(harness.terminalEvents)")
 
-        // The next capture is unaffected.
+        // The next capture is unaffected, and the cancelled one never reports.
         harness.capture.start()
-        try await harness.waitForStart(timeout: 10, count: 2)
+        try await harness.waitForStart(timeout: 10)
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
         XCTAssertNotEqual(audio.fileURL, fileURL)
         XCTAssertGreaterThanOrEqual(audio.frameCount, CaptureRecording.minimumFrameCount)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(harness.terminalEvents, [.finished(audio)], "Only the second capture reports")
     }
 
     @MainActor
@@ -318,7 +343,7 @@ final class CaptureTests: XCTestCase {
         XCTAssertEqual(harness.capture.state, .ready)
 
         harness.capture.start()
-        try await harness.waitForStart(timeout: 10, count: 2)
+        try await harness.waitForStart(timeout: 10)
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
         XCTAssertGreaterThanOrEqual(audio.frameCount, CaptureRecording.minimumFrameCount)
@@ -417,7 +442,10 @@ enum CaptureTestError: Error {
     case timedOut(String)
     case noWindowScene
     case microphoneFailed
+    case startFailed
     case badWAV
+    /// evaluateJavaScript got no answer: the page's web process isn't running script.
+    case pageUnresponsive(String)
 }
 
 /// Owns a window, a WebAudioCapture attached to it, and the delegate events it reports.
@@ -525,14 +553,19 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         try await waitUntil("the capture page to load", timeout: timeout) { capture.isReady }
     }
 
-    func waitForStart(timeout: TimeInterval, count: Int = 1) async throws {
-        try await waitUntil("audible audio", timeout: timeout) {
-            events.filter { $0 == .started }.count >= count || terminalEvents.count >= count
-        }
+    /// Waits for the capture started last to become audible, and stops waiting as soon as it
+    /// fails instead. Call it right after `start()`.
+    func waitForStart(timeout: TimeInterval, file: StaticString = #filePath, line: UInt = #line) async throws {
         let starts = events.filter { $0 == .started }.count
-        guard starts >= count else {
-            XCTFail("Capture failed to start: \(events)")
-            throw CaptureTestError.timedOut("audible audio")
+        let terminals = terminalEvents.count
+        try await waitUntil("audible audio", timeout: timeout, file: file, line: line) {
+            events.filter { $0 == .started }.count > starts || terminalEvents.count > terminals
+        }
+        guard events.filter({ $0 == .started }).count > starts else {
+            let status = (try? await pageStatus(timeout: 5)) ?? ["status": "no answer"]
+            record("page status after a failed start", status)
+            XCTFail("Capture failed to start: \(events). Page status: \(status)", file: file, line: line)
+            throw CaptureTestError.startFailed
         }
     }
 
@@ -568,16 +601,25 @@ final class CaptureHarness: WebAudioCaptureDelegate {
 
     // MARK: Page access
 
-    func evaluate(_ script: String) async throws -> Any? {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
-            capture.webView.evaluateJavaScript(script) { result, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: result)
-                }
-            }
+    /// evaluateJavaScript that gives up after `timeout`, so a page whose web process stopped
+    /// running script fails the test instead of hanging the suite.
+    func evaluate(_ script: String, timeout: TimeInterval = 10) async throws -> Any? {
+        let reply = PageReply()
+        capture.webView.evaluateJavaScript(script) { result, error in
+            reply.result = result
+            reply.error = error
+            reply.isDone = true
         }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !reply.isDone {
+            guard Date() < deadline else {
+                XCTFail("The page did not answer within \(timeout) s: \(script.prefix(60))")
+                throw CaptureTestError.pageUnresponsive(String(script.prefix(60)))
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        if let error = reply.error { throw error }
+        return reply.result
     }
 
     /// Runs a statement in the page and ignores its value.
@@ -585,14 +627,14 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         _ = try await evaluate("\(statement); 0")
     }
 
-    func evaluateJSON(_ script: String) async throws -> [String: Any] {
-        let json = try await evaluate(script) as? String ?? "{}"
+    func evaluateJSON(_ script: String, timeout: TimeInterval = 10) async throws -> [String: Any] {
+        let json = try await evaluate(script, timeout: timeout) as? String ?? "{}"
         return try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] ?? [:]
     }
 
     /// The page's `ffCapture.status()`: states and counts, never audio.
-    func pageStatus() async throws -> [String: Any] {
-        try await evaluateJSON("JSON.stringify(ffCapture.status())")
+    func pageStatus(timeout: TimeInterval = 10) async throws -> [String: Any] {
+        try await evaluateJSON("JSON.stringify(ffCapture.status())", timeout: timeout)
     }
 
     /// Prints diagnostics and keeps them in the result bundle.
@@ -670,4 +712,12 @@ enum ToneAnalysis {
         }
         return (windows, hum, bip, bop)
     }
+}
+
+/// The answer to one evaluateJavaScript call, filled in by its completion handler.
+@MainActor
+private final class PageReply {
+    var isDone = false
+    var result: Any?
+    var error: Error?
 }
