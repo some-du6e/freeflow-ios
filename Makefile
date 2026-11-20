@@ -43,6 +43,25 @@ YAML_FILES = $(shell find .github -type f \( -name '*.yml' -o -name '*.yaml' \) 
 RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
 
+# iOS app and keyboard extension (Xcode project; see ios/ and .github/workflows/ios.yml).
+IOS_PLISTS = \
+	ios/FreeFlow.xcodeproj/project.pbxproj \
+	ios/FreeFlow/Info.plist \
+	ios/FreeFlow/FreeFlow.entitlements \
+	ios/FreeFlowKeyboard/Info.plist \
+	ios/FreeFlowKeyboard/FreeFlowKeyboard.entitlements
+IOS_DESTINATION ?= platform=iOS Simulator,name=iPhone 17
+IOS_RESULT_BUNDLE = $(BUILD_DIR)/ios/FreeFlow.xcresult
+IOS_XCODEBUILD = xcodebuild \
+	-project ios/FreeFlow.xcodeproj \
+	-scheme FreeFlow \
+	-configuration Debug \
+	-destination '$(IOS_DESTINATION)' \
+	-derivedDataPath $(BUILD_DIR)/ios/DerivedData
+# Ad-hoc simulator signing that keeps the App Group and keychain entitlements
+# without an Apple developer team, matching CI.
+IOS_SIGNING_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
+
 # Pick the icon source based on which bundle we are building. Dev builds get
 # a distinct hammer-on-waveform icon so a developer's dock shows at a glance
 # which FreeFlow they are running when both are installed side by side.
@@ -54,7 +73,7 @@ ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 endif
 
-.PHONY: all check clean run icon dmg codesign-dmg notarize test typecheck validate
+.PHONY: all check clean run icon dmg codesign-dmg notarize test typecheck validate ios-build ios-test
 
 all: $(APP_EXECUTABLE_TARGET)
 
@@ -131,9 +150,16 @@ test: $(TEST_CONTEXT_HARNESS) $(TEST_DISPATCH_HARNESS)
 	@$(TEST_RUNNER)
 
 validate:
-	plutil -lint Info.plist FreeFlow.entitlements
+	plutil -lint Info.plist FreeFlow.entitlements $(IOS_PLISTS)
 	@set -e; for script in $(SHELL_SCRIPTS); do bash -n "$$script"; done
 	@ruby -e 'require "yaml"; ARGV.each { |file| YAML.load_file(file) }' $(YAML_FILES)
+
+ios-build:
+	$(IOS_XCODEBUILD) $(IOS_SIGNING_FLAGS) build
+
+ios-test:
+	rm -rf "$(IOS_RESULT_BUNDLE)"
+	$(IOS_XCODEBUILD) -resultBundlePath "$(IOS_RESULT_BUNDLE)" $(IOS_SIGNING_FLAGS) test
 
 icon: $(ICON_ICNS)
 

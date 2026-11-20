@@ -1,0 +1,184 @@
+name: iOS
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - "ios-wip/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test (Xcode 26.6, iOS 26.5)
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      DERIVED_DATA_PATH: build/ios/DerivedData
+      RESULT_BUNDLE_PATH: build/ios/FreeFlow.xcresult
+      ATTACHMENTS_PATH: build/ios/attachments
+      SIMULATOR_NAME: iPhone 17
+      SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Show toolchain and simulators
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devices available
+
+      - name: Show resolved build settings
+        run: |
+          xcodebuild -showBuildSettings -json \
+            -project ios/FreeFlow.xcodeproj \
+            -scheme FreeFlow \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            | jq '.[] | {target, settings: (.buildSettings | {
+                PRODUCT_BUNDLE_IDENTIFIER, IPHONEOS_DEPLOYMENT_TARGET, SWIFT_VERSION,
+                TARGETED_DEVICE_FAMILY, MARKETING_VERSION, CURRENT_PROJECT_VERSION,
+                SWIFT_TREAT_WARNINGS_AS_ERRORS, CODE_SIGN_STYLE, CODE_SIGN_IDENTITY,
+                DEVELOPMENT_TEAM, CODE_SIGN_ENTITLEMENTS, INFOPLIST_FILE, ENABLE_DEBUG_DYLIB})}'
+
+      - name: Boot simulator
+        run: |
+          udid="$(xcrun simctl list devices available --json | jq -r \
+            --arg runtime "$SIMULATOR_RUNTIME" --arg name "$SIMULATOR_NAME" \
+            '[.devices[$runtime][]? | select(.name == $name)][0].udid // empty')"
+          if [ -z "$udid" ]; then
+            echo "::error::No available $SIMULATOR_NAME simulator for $SIMULATOR_RUNTIME"
+            exit 1
+          fi
+          echo "Booting $SIMULATOR_NAME ($udid)"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl bootstatus "$udid" -b
+
+      # Ad-hoc signing with no team keeps code signing enabled, so Xcode still
+      # embeds the App Group and keychain entitlements in the simulator build.
+      # CODE_SIGNING_ALLOWED=NO would drop them.
+      - name: Build and test
+        run: |
+          xcodebuild test \
+            -project ios/FreeFlow.xcodeproj \
+            -scheme FreeFlow \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -resultBundlePath "$RESULT_BUNDLE_PATH" \
+            -parallel-testing-enabled NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=
+
+      - name: Inspect app bundle and entitlements
+        if: always()
+        run: |
+          app="$DERIVED_DATA_PATH/Build/Products/Debug-iphonesimulator/FreeFlow.app"
+          appex="$app/PlugIns/FreeFlowKeyboard.appex"
+          if [ ! -d "$app" ]; then
+            echo "No app bundle at $app"
+            exit 0
+          fi
+
+          echo "::group::FreeFlow.app/PlugIns"
+          ls -la "$app/PlugIns" || true
+          echo "::endgroup::"
+          if [ ! -d "$appex" ]; then
+            echo "::error::FreeFlowKeyboard.appex is not embedded in FreeFlow.app/PlugIns"
+            exit 1
+          fi
+
+          for bundle in "$app" "$appex"; do
+            echo "::group::Code signature entitlements: $(basename "$bundle")"
+            codesign -d --entitlements :- "$bundle" || true
+            echo "::endgroup::"
+          done
+
+          # Simulator builds carry their entitlements in a __TEXT,__entitlements
+          # section of the executable rather than in the code signature.
+          for binary in "$app/FreeFlow" "$app/FreeFlow.debug.dylib" \
+            "$appex/FreeFlowKeyboard" "$appex/FreeFlowKeyboard.debug.dylib"; do
+            [ -f "$binary" ] || continue
+            echo "::group::__TEXT,__entitlements: ${binary#"$DERIVED_DATA_PATH/Build/Products/"}"
+            python3 - "$binary" <<'PY' || echo "Could not read the entitlements section"
+          import struct
+          import sys
+
+          path = sys.argv[1]
+          with open(path, "rb") as binary:
+              data = binary.read()
+          if struct.unpack_from("<I", data)[0] != 0xFEEDFACF:
+              sys.exit(f"{path} is not a thin 64-bit Mach-O file")
+          offset = 32
+          for _ in range(struct.unpack_from("<I", data, 16)[0]):
+              command, command_size = struct.unpack_from("<II", data, offset)
+              if command == 0x19:  # LC_SEGMENT_64
+                  for index in range(struct.unpack_from("<I", data, offset + 64)[0]):
+                      section = offset + 72 + index * 80
+                      name = data[section:section + 16].rstrip(b"\0")
+                      segment = data[section + 16:section + 32].rstrip(b"\0")
+                      if (segment, name) == (b"__TEXT", b"__entitlements"):
+                          size, file_offset = struct.unpack_from("<QI", data, section + 40)
+                          print(data[file_offset:file_offset + size].decode())
+                          sys.exit(0)
+              offset += command_size
+          print("No __TEXT,__entitlements section")
+          PY
+            echo "::endgroup::"
+          done
+
+      - name: Summarize test results
+        if: always()
+        run: |
+          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
+            echo "No result bundle at $RESULT_BUNDLE_PATH"
+            exit 0
+          fi
+          xcrun xcresulttool get test-results tests --path "$RESULT_BUNDLE_PATH" \
+            || echo "::warning::Could not summarize $RESULT_BUNDLE_PATH"
+
+      - name: Export test attachments
+        if: always()
+        run: |
+          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
+            echo "No result bundle at $RESULT_BUNDLE_PATH"
+            exit 0
+          fi
+          mkdir -p "$ATTACHMENTS_PATH"
+          xcrun xcresulttool export attachments \
+            --path "$RESULT_BUNDLE_PATH" \
+            --output-path "$ATTACHMENTS_PATH"
+          ls -la "$ATTACHMENTS_PATH"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-test-results
+          path: |
+            ${{ env.ATTACHMENTS_PATH }}
+            ${{ env.RESULT_BUNDLE_PATH }}
+          if-no-files-found: warn
+          retention-days: 14

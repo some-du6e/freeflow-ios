@@ -3,3 +3,7 @@ build/
 *.swp
 .env
 .build
+ios/Config/Local.xcconfig
+xcuserdata/
+*.xcresult
+DerivedData/

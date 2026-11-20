@@ -1,0 +1,23 @@
+// Personal signing overrides for the FreeFlow iOS project.
+//
+// Copy this file to Local.xcconfig in the same folder and replace both
+// values. Local.xcconfig is gitignored and is included at the end of
+// FreeFlow.xcconfig, so these settings override the shared defaults on your
+// machine only.
+//
+// Simulator builds do not need this file.
+
+// Your Apple developer Team ID: a 10-character code shown in Xcode under
+// Settings > Accounts, or at developer.apple.com under Membership details.
+// Automatic signing uses it to create provisioning profiles for a device.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// A bundle identifier prefix that your team can register. Bundle IDs and
+// App Groups are unique across all Apple developer accounts, so a personal
+// build cannot reuse com.zachlatta.freeflow.ios. Xcode derives every
+// identifier from this prefix:
+//   app:                   <prefix>
+//   keyboard extension:    <prefix>.keyboard
+//   App Group:             group.<prefix>
+//   keychain access group: <team ID>.<prefix>.shared
+FREEFLOW_BUNDLE_ID_PREFIX = com.example.freeflow
