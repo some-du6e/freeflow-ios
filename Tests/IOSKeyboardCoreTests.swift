@@ -1,7 +1,1186 @@
 import Foundation
 
-/// Tests for the Foundation-only keyboard dictation state machine in
-/// ios/Shared/Core/Keyboard. The keyboard agent fills this in.
+/// Tests for the Foundation-only keyboard dictation state machine and panel
+/// helpers in ios/Shared/Core/Keyboard. Times are offsets from the reference
+/// date so threshold arithmetic is exact; text, files and IDs are invented.
 enum IOSKeyboardCoreTests {
-    static func run() {}
+    static func run() {
+        testSetupIssuesComeInFixOrder()
+        testMemoryGate()
+        testSetupChangesMoveTheRestingState()
+        testPressWithUnknownSetupDoesNothing()
+        testPressWhileSetupNeededShowsTheIssue()
+        testPressWithLowMemoryOffersTheFallback()
+        testTapToToggleRecordsAndInserts()
+        testHoldToTalkStopsOnRelease()
+        testHoldThresholdBoundary()
+        testHoldStateArrivesWithoutRelease()
+        testDoneStopsRecording()
+        testSecondPressDuringHoldOrProcessingIsIgnored()
+        testCancelDiscardsCaptureOrTask()
+        testAutoStopAfterFiveMinutes()
+        testCaptureFailuresBeforeAudioOfferTheFallback()
+        testPermissionDeniedNeedsSetup()
+        testCaptureFailuresAfterAudio()
+        testStartAndStopBackstops()
+        testStrayCaptureCallbacks()
+        testMicPressRetriesFromResultStates()
+        testEmptyTranscriptIsNothingToInsert()
+        testPressEnterInsertsNewline()
+        testPressEnterAloneInsertsOnlyNewline()
+        testRawFallbackIsReported()
+        testChangedFieldIsNotInserted()
+        testUnknownDocumentStillInserts()
+        testHiddenKeyboardDoesNotInsert()
+        testStaleAndCancelledPipelineResultsAreIgnored()
+        testPipelineFailureShowsTruncatedMessage()
+        testMessageFormattingMatchesMacOS()
+        testTimedStatesExpireToTheRestingState()
+        testInsertLast()
+        testFallbackHandoffFlow()
+        testHandoffResultInsertion()
+        testHandoffWaitEnds()
+        testDisappearingCancelsCapture()
+        testHapticsNeedFullAccess()
+        testDisplayForEveryPhase()
+        testDisplayWording()
+        testDebugStatesCoverEveryStatus()
+        testDeleteRepeatTiming()
+        testWordDeletionCounts()
+        testReturnKeyKinds()
+        testWaveformShape()
+        testHandoffURL()
+        testAccessibilityIdentifiersAndStatusNames()
+        testHistoryDraftMakesKeyboardEntry()
+    }
+
+    // MARK: Fixtures
+
+    private static let t0 = Date(timeIntervalSinceReferenceDate: 0)
+    private static let fieldA = UUID(uuidString: "0A0A0A0A-0000-4000-8000-00000000000A")!
+    private static let fieldB = UUID(uuidString: "0B0B0B0B-0000-4000-8000-00000000000B")!
+    private static let sessionOne = UUID(uuidString: "5E551000-0000-4000-8000-000000000001")!
+    private static let sessionTwo = UUID(uuidString: "5E551000-0000-4000-8000-000000000002")!
+    private static let ready = KeyboardDictationSetup(
+        hasFullAccess: true,
+        microphoneGranted: true,
+        hasAPIKey: true,
+        availableMemoryBytes: 64 * 1024 * 1024
+    )
+    private static let noAPIKey = KeyboardDictationSetup(
+        hasFullAccess: true,
+        microphoneGranted: true,
+        hasAPIKey: false,
+        availableMemoryBytes: nil
+    )
+    private static let fallbackText = "Can't record in the keyboard here. Record in FreeFlow instead."
+
+    private static func at(_ seconds: TimeInterval) -> Date {
+        t0 + seconds
+    }
+
+    private static func status(_ machine: KeyboardDictationMachine) -> KeyboardDictationStatus {
+        KeyboardDictationDisplay(machine: machine).status
+    }
+
+    private static func text(_ machine: KeyboardDictationMachine) -> String {
+        KeyboardDictationDisplay(machine: machine).statusText
+    }
+
+    private static func insertions(_ effects: [KeyboardDictationEffect]) -> [String] {
+        effects.compactMap { effect in
+            if case .insert(let text) = effect { return text }
+            return nil
+        }
+    }
+
+    private static func sampleAudio(_ name: String = "freeflow-keyboard-test") -> KeyboardDictationAudio {
+        KeyboardDictationAudio(fileURL: URL(fileURLWithPath: "/tmp/\(name).wav"), duration: 2.5)
+    }
+
+    private static func result(
+        _ text: String,
+        raw: String? = nil,
+        pressEnter: Bool = false,
+        route: DictationRoute = .cleanup,
+        rawFallback: Bool = false
+    ) -> DictationResult {
+        DictationResult(
+            rawTranscript: raw ?? text,
+            text: text,
+            pressEnter: pressEnter,
+            route: route,
+            usedRawFallback: rawFallback
+        )
+    }
+
+    private static func document(_ identifier: UUID? = fieldA, before: String? = "Dear Sam,") -> KeyboardDictationDocument {
+        KeyboardDictationDocument(identifier: identifier, textBeforeCursor: before)
+    }
+
+    private static func draft(
+        _ status: HistoryEntry.Status,
+        at seconds: TimeInterval,
+        raw: String,
+        text: String,
+        route: DictationRoute? = .cleanup
+    ) -> KeyboardDictationHistoryDraft {
+        KeyboardDictationHistoryDraft(
+            createdAt: at(seconds),
+            status: status,
+            rawTranscript: raw,
+            text: text,
+            route: route,
+            errorMessage: nil,
+            durationSeconds: 2.5
+        )
+    }
+
+    private static func readyMachine(_ setup: KeyboardDictationSetup = ready) -> KeyboardDictationMachine {
+        var machine = KeyboardDictationMachine()
+        _ = machine.handle(.setupChanged(setup), now: t0)
+        _ = machine.handle(.appeared, now: t0)
+        return machine
+    }
+
+    /// Tap to toggle: pressed at 0 s, released at 0.25 s, audio from 0.5 s.
+    private static func recordingMachine(documentID: UUID? = fieldA) -> KeyboardDictationMachine {
+        var machine = readyMachine()
+        _ = machine.handle(.micPressBegan(documentID: documentID), now: at(0))
+        _ = machine.handle(.micPressEnded, now: at(0.25))
+        _ = machine.handle(.captureStarted, now: at(0.5))
+        return machine
+    }
+
+    /// Stopped with Done at 3 s; the recording arrived at 3.25 s.
+    private static func processingMachine(
+        _ audio: KeyboardDictationAudio,
+        documentID: UUID? = fieldA
+    ) -> KeyboardDictationMachine {
+        var machine = recordingMachine(documentID: documentID)
+        _ = machine.handle(.doneTapped, now: at(3))
+        _ = machine.handle(.captureFinished(audio), now: at(3.25))
+        return machine
+    }
+
+    // MARK: Setup gating
+
+    private static func testSetupIssuesComeInFixOrder() {
+        let nothing = KeyboardDictationSetup(hasFullAccess: false, microphoneGranted: false, hasAPIKey: false, availableMemoryBytes: nil)
+        TestSupport.expectEqual(nothing.blockingIssue, .fullAccess)
+        let onlyAccessMissing = KeyboardDictationSetup(hasFullAccess: false, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: nil)
+        TestSupport.expectEqual(onlyAccessMissing.blockingIssue, .fullAccess)
+        let noMicrophone = KeyboardDictationSetup(hasFullAccess: true, microphoneGranted: false, hasAPIKey: false, availableMemoryBytes: nil)
+        TestSupport.expectEqual(noMicrophone.blockingIssue, .microphone)
+        TestSupport.expectEqual(noAPIKey.blockingIssue, .apiKey)
+        TestSupport.expectEqual(ready.blockingIssue, nil)
+    }
+
+    private static func testMemoryGate() {
+        func setup(_ bytes: Int?) -> KeyboardDictationSetup {
+            KeyboardDictationSetup(hasFullAccess: true, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: bytes)
+        }
+        TestSupport.expectEqual(KeyboardDictationSetup.minimumAvailableMemoryBytes, 33_554_432)
+        TestSupport.expect(setup(nil).hasMemoryToRecord, "An unreported limit (the simulator) must not block capture")
+        TestSupport.expect(!setup(33_554_431).hasMemoryToRecord, "Less than 32 MB free must block capture")
+        TestSupport.expect(setup(33_554_432).hasMemoryToRecord, "32 MB free must allow capture")
+    }
+
+    private static func testSetupChangesMoveTheRestingState() {
+        var machine = KeyboardDictationMachine()
+        TestSupport.expectEqual(status(machine), .idle)
+
+        let noAccess = KeyboardDictationSetup(hasFullAccess: false, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: nil)
+        TestSupport.expectEqual(machine.handle(.setupChanged(noAccess), now: t0), [])
+        TestSupport.expectEqual(machine.phase, .setupNeeded(.fullAccess))
+        TestSupport.expectEqual(status(machine), .setupNeeded)
+        TestSupport.expectEqual(text(machine), "Turn on Allow Full Access in Settings to dictate")
+
+        _ = machine.handle(.setupChanged(noAPIKey), now: t0)
+        TestSupport.expectEqual(machine.phase, .setupNeeded(.apiKey))
+        TestSupport.expectEqual(text(machine), "Open FreeFlow to add your API key")
+
+        _ = machine.handle(.setupChanged(ready), now: t0)
+        TestSupport.expectEqual(machine.phase, .idle)
+
+        var recording = recordingMachine()
+        _ = recording.handle(.setupChanged(noAPIKey), now: at(1))
+        TestSupport.expectEqual(status(recording), .recording)
+    }
+
+    private static func testPressWithUnknownSetupDoesNothing() {
+        var machine = KeyboardDictationMachine()
+        TestSupport.expectEqual(machine.handle(.micPressBegan(documentID: fieldA), now: t0), [])
+        TestSupport.expectEqual(machine.phase, .idle)
+        TestSupport.expectEqual(machine.attempt, 0)
+    }
+
+    private static func testPressWhileSetupNeededShowsTheIssue() {
+        let noMicrophone = KeyboardDictationSetup(hasFullAccess: true, microphoneGranted: false, hasAPIKey: true, availableMemoryBytes: nil)
+        var machine = readyMachine(noMicrophone)
+        TestSupport.expectEqual(machine.phase, .setupNeeded(.microphone))
+
+        let effects = machine.handle(.micPressBegan(documentID: fieldA), now: t0)
+        TestSupport.expectEqual(effects, [.announce("Open FreeFlow to allow the microphone")])
+        TestSupport.expectEqual(machine.phase, .setupNeeded(.microphone))
+        TestSupport.expectEqual(machine.attempt, 0)
+
+        _ = machine.handle(.setupChanged(ready), now: at(1))
+        TestSupport.expectEqual(machine.handle(.micPressBegan(documentID: fieldA), now: at(1)), [.startCapture])
+        TestSupport.expectEqual(machine.attempt, 1)
+    }
+
+    private static func testPressWithLowMemoryOffersTheFallback() {
+        let lowMemory = KeyboardDictationSetup(hasFullAccess: true, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: 20 * 1024 * 1024)
+        var machine = readyMachine(lowMemory)
+        TestSupport.expectEqual(machine.phase, .idle)
+
+        let effects = machine.handle(.micPressBegan(documentID: fieldA), now: t0)
+        TestSupport.expectEqual(effects, [.announce("Not enough memory to record here. Record in FreeFlow instead.")])
+        TestSupport.expectEqual(machine.phase, .fallbackAvailable(.lowMemory))
+        TestSupport.expectEqual(machine.attempt, 0)
+        let display = KeyboardDictationDisplay(machine: machine)
+        TestSupport.expectEqual(display.status, .fallbackAvailable)
+        TestSupport.expectEqual(display.trailingAction, .openApp)
+    }
+
+    // MARK: Gestures
+
+    private static func testTapToToggleRecordsAndInserts() {
+        var machine = readyMachine()
+        var effects = machine.handle(.micPressBegan(documentID: fieldA), now: at(0))
+        TestSupport.expectEqual(effects, [.startCapture])
+        TestSupport.expectEqual(status(machine), .starting)
+        TestSupport.expectEqual(machine.attempt, 1)
+        TestSupport.expectEqual(machine.nextWakeUp, at(0.35))
+
+        effects = machine.handle(.micPressEnded, now: at(0.25))
+        TestSupport.expectEqual(effects, [])
+        TestSupport.expectEqual(machine.activeRecording?.gesture, .latched)
+        TestSupport.expectEqual(machine.nextWakeUp, at(4))
+
+        effects = machine.handle(.captureStarted, now: at(0.5))
+        TestSupport.expectEqual(effects, [.haptic, .reportCapture(worked: true, failure: nil)])
+        TestSupport.expectEqual(status(machine), .recording)
+        TestSupport.expectEqual(text(machine), "Listening… tap the mic to stop")
+        TestSupport.expectEqual(machine.nextWakeUp, at(300))
+
+        effects = machine.handle(.micPressBegan(documentID: fieldA), now: at(4))
+        TestSupport.expectEqual(effects, [.haptic, .stopCapture])
+        TestSupport.expectEqual(status(machine), .processing)
+        TestSupport.expectEqual(machine.nextWakeUp, at(9))
+        TestSupport.expectEqual(machine.handle(.micPressEnded, now: at(4.25)), [])
+
+        let audio = sampleAudio()
+        effects = machine.handle(.captureFinished(audio), now: at(4.5))
+        TestSupport.expectEqual(effects, [.runPipeline(attempt: 1, audioFileURL: audio.fileURL)])
+        TestSupport.expectEqual(machine.nextWakeUp, nil)
+
+        let finished = result("Hello world.", raw: "hello world")
+        effects = machine.handle(
+            .pipelineFinished(attempt: 1, result: finished, document: document(fieldA, before: "Note:")),
+            now: at(5)
+        )
+        TestSupport.expectEqual(effects, [
+            .deleteAudio(audio.fileURL),
+            .insert(TranscriptRouting.insertionText(for: "Hello world.", precedingText: "Note:")),
+            .recordHistory(draft(.inserted, at: 5, raw: "hello world", text: "Hello world.")),
+            .announce("Inserted"),
+        ])
+        TestSupport.expectEqual(machine.phase, .inserted(.dictation, until: at(6.5)))
+
+        _ = machine.handle(.tick, now: at(6.25))
+        TestSupport.expectEqual(status(machine), .inserted)
+        _ = machine.handle(.tick, now: at(6.5))
+        TestSupport.expectEqual(machine.phase, .idle)
+        TestSupport.expectEqual(machine.nextWakeUp, nil)
+    }
+
+    private static func testHoldToTalkStopsOnRelease() {
+        var machine = readyMachine()
+        _ = machine.handle(.micPressBegan(documentID: fieldA), now: at(0))
+        _ = machine.handle(.captureStarted, now: at(0.25))
+        TestSupport.expectEqual(text(machine), "Listening…")
+
+        TestSupport.expectEqual(machine.handle(.micPressEnded, now: at(2)), [.haptic, .stopCapture])
+        TestSupport.expectEqual(status(machine), .processing)
+    }
+
+    private static func testHoldThresholdBoundary() {
+        TestSupport.expectEqual(KeyboardDictationMachine.holdToTalkThreshold, 0.35)
+
+        var quick = readyMachine()
+        _ = quick.handle(.micPressBegan(documentID: nil), now: at(0))
+        TestSupport.expectEqual(quick.handle(.micPressEnded, now: at(0.34)), [])
+        TestSupport.expectEqual(quick.activeRecording?.gesture, .latched)
+
+        var held = readyMachine()
+        _ = held.handle(.micPressBegan(documentID: nil), now: at(0))
+        TestSupport.expectEqual(held.handle(.micPressEnded, now: at(0.35)), [.haptic, .stopCapture])
+        TestSupport.expectEqual(status(held), .processing)
+    }
+
+    private static func testHoldStateArrivesWithoutRelease() {
+        var machine = readyMachine()
+        _ = machine.handle(.micPressBegan(documentID: nil), now: at(0))
+        _ = machine.handle(.captureStarted, now: at(0.25))
+        TestSupport.expectEqual(machine.nextWakeUp, at(0.35))
+
+        TestSupport.expectEqual(machine.handle(.tick, now: at(0.35)), [])
+        TestSupport.expectEqual(machine.activeRecording?.gesture, .holding)
+        TestSupport.expectEqual(text(machine), "Listening… release to stop")
+        TestSupport.expectEqual(machine.nextWakeUp, at(300))
+
+        TestSupport.expectEqual(machine.handle(.micPressEnded, now: at(1)), [.haptic, .stopCapture])
+    }
+
+    private static func testDoneStopsRecording() {
+        var idle = readyMachine()
+        TestSupport.expectEqual(idle.handle(.doneTapped, now: t0), [])
+        TestSupport.expectEqual(idle.phase, .idle)
+
+        var machine = recordingMachine()
+        TestSupport.expectEqual(machine.handle(.doneTapped, now: at(2)), [.haptic, .stopCapture])
+        TestSupport.expectEqual(status(machine), .processing)
+
+        // Done before any audio stops too; capture then reports no audio.
+        var starting = readyMachine()
+        _ = starting.handle(.micPressBegan(documentID: nil), now: at(0))
+        _ = starting.handle(.micPressEnded, now: at(0.25))
+        TestSupport.expectEqual(starting.handle(.doneTapped, now: at(1)), [.haptic, .stopCapture])
+        TestSupport.expectEqual(starting.handle(.captureFailed(.noAudio), now: at(1.25)), [.announce("No audio was recorded")])
+        TestSupport.expectEqual(starting.phase, .nothingToInsert(.noAudio, until: at(4.25)))
+    }
+
+    private static func testSecondPressDuringHoldOrProcessingIsIgnored() {
+        var machine = readyMachine()
+        _ = machine.handle(.micPressBegan(documentID: nil), now: at(0))
+        TestSupport.expectEqual(machine.handle(.micPressBegan(documentID: nil), now: at(0.25)), [])
+        TestSupport.expectEqual(status(machine), .starting)
+        TestSupport.expectEqual(machine.attempt, 1)
+
+        var processing = processingMachine(sampleAudio())
+        TestSupport.expectEqual(processing.handle(.micPressBegan(documentID: nil), now: at(4)), [])
+        TestSupport.expectEqual(processing.handle(.micPressEnded, now: at(4.25)), [])
+        TestSupport.expectEqual(status(processing), .processing)
+    }
+
+    private static func testCancelDiscardsCaptureOrTask() {
+        var starting = readyMachine()
+        _ = starting.handle(.micPressBegan(documentID: nil), now: at(0))
+        TestSupport.expectEqual(starting.handle(.cancelTapped, now: at(0.5)), [.cancelCapture])
+        TestSupport.expectEqual(starting.phase, .idle)
+
+        var recording = recordingMachine()
+        TestSupport.expectEqual(recording.handle(.cancelTapped, now: at(2)), [.cancelCapture])
+        TestSupport.expectEqual(recording.phase, .idle)
+        TestSupport.expectEqual(recording.handle(.micPressEnded, now: at(2.25)), [])
+
+        var stopping = recordingMachine()
+        _ = stopping.handle(.doneTapped, now: at(2))
+        TestSupport.expectEqual(stopping.handle(.cancelTapped, now: at(2.25)), [.cancelCapture])
+        TestSupport.expectEqual(stopping.phase, .idle)
+
+        let audio = sampleAudio()
+        var processing = processingMachine(audio)
+        TestSupport.expectEqual(processing.handle(.cancelTapped, now: at(4)), [.cancelPipeline, .deleteAudio(audio.fileURL)])
+        TestSupport.expectEqual(processing.phase, .idle)
+        TestSupport.expectEqual(
+            processing.handle(.pipelineFinished(attempt: 1, result: result("Late."), document: document()), now: at(5)),
+            []
+        )
+        TestSupport.expectEqual(processing.handle(.pipelineFailed(attempt: 1, message: "Late"), now: at(5)), [])
+        TestSupport.expectEqual(processing.phase, .idle)
+
+        // Cancelling back to rest respects missing setup.
+        var cancelledWithoutKey = recordingMachine()
+        _ = cancelledWithoutKey.handle(.setupChanged(noAPIKey), now: at(1))
+        _ = cancelledWithoutKey.handle(.cancelTapped, now: at(2))
+        TestSupport.expectEqual(cancelledWithoutKey.phase, .setupNeeded(.apiKey))
+
+        var idle = readyMachine()
+        TestSupport.expectEqual(idle.handle(.cancelTapped, now: t0), [])
+    }
+
+    private static func testAutoStopAfterFiveMinutes() {
+        TestSupport.expectEqual(KeyboardDictationMachine.maximumRecordingDuration, 300)
+
+        var machine = recordingMachine()
+        TestSupport.expectEqual(machine.nextWakeUp, at(300))
+        TestSupport.expectEqual(machine.handle(.tick, now: at(299.5)), [])
+        TestSupport.expectEqual(status(machine), .recording)
+        TestSupport.expectEqual(machine.handle(.tick, now: at(300)), [.haptic, .stopCapture])
+        TestSupport.expectEqual(status(machine), .processing)
+
+        var held = readyMachine()
+        _ = held.handle(.micPressBegan(documentID: nil), now: at(0))
+        _ = held.handle(.captureStarted, now: at(0.5))
+        _ = held.handle(.tick, now: at(1))
+        TestSupport.expectEqual(held.activeRecording?.gesture, .holding)
+        TestSupport.expectEqual(held.handle(.tick, now: at(300)), [.haptic, .stopCapture])
+        TestSupport.expectEqual(held.handle(.micPressEnded, now: at(301)), [])
+        TestSupport.expectEqual(status(held), .processing)
+    }
+
+    // MARK: Capture failures
+
+    private static func testCaptureFailuresBeforeAudioOfferTheFallback() {
+        let failures: [KeyboardDictationCaptureFailure] = [.pageUnavailable, .startTimedOut, .unsupported, .interrupted]
+        for failure in failures {
+            var machine = readyMachine()
+            _ = machine.handle(.micPressBegan(documentID: nil), now: at(0))
+            let effects = machine.handle(.captureFailed(failure), now: at(0.5))
+            TestSupport.expectEqual(machine.phase, .fallbackAvailable(.captureUnavailable))
+            TestSupport.expectEqual(effects, [.reportCapture(worked: false, failure: failure), .announce(fallbackText)])
+
+            let display = KeyboardDictationDisplay(machine: machine)
+            TestSupport.expectEqual(display.status, .fallbackAvailable)
+            TestSupport.expectEqual(display.trailingAction, .openApp)
+            TestSupport.expectEqual(display.cancelTitle, "Not now")
+            TestSupport.expectEqual(machine.handle(.micPressEnded, now: at(1)), [])
+        }
+
+        var dismissed = readyMachine()
+        _ = dismissed.handle(.micPressBegan(documentID: nil), now: at(0))
+        _ = dismissed.handle(.captureFailed(.pageUnavailable), now: at(0.5))
+        TestSupport.expectEqual(dismissed.handle(.cancelTapped, now: at(1)), [])
+        TestSupport.expectEqual(dismissed.phase, .idle)
+    }
+
+    private static func testPermissionDeniedNeedsSetup() {
+        var machine = readyMachine()
+        _ = machine.handle(.micPressBegan(documentID: nil), now: at(0))
+        let effects = machine.handle(.captureFailed(.permissionDenied), now: at(0.5))
+        TestSupport.expectEqual(machine.phase, .setupNeeded(.microphone))
+        TestSupport.expectEqual(status(machine), .setupNeeded)
+        TestSupport.expectEqual(text(machine), "Open FreeFlow to allow the microphone")
+        TestSupport.expectEqual(effects, [
+            .reportCapture(worked: false, failure: .permissionDenied),
+            .announce("Open FreeFlow to allow the microphone"),
+        ])
+    }
+
+    private static func testCaptureFailuresAfterAudio() {
+        var interrupted = recordingMachine()
+        var effects = interrupted.handle(.captureFailed(.interrupted), now: at(2))
+        TestSupport.expectEqual(interrupted.phase, .error(message: "Recording stopped unexpectedly. Try again.", until: at(8)))
+        TestSupport.expectEqual(effects, [
+            .reportCapture(worked: true, failure: .interrupted),
+            .announce("Recording stopped unexpectedly. Try again."),
+        ])
+
+        var fileError = recordingMachine()
+        _ = fileError.handle(.doneTapped, now: at(2))
+        effects = fileError.handle(.captureFailed(.fileError), now: at(2.25))
+        TestSupport.expectEqual(fileError.phase, .error(message: "Couldn't save the recording. Try again.", until: at(8.25)))
+        TestSupport.expectEqual(effects.first, .reportCapture(worked: true, failure: .fileError))
+
+        var pageGone = recordingMachine()
+        _ = pageGone.handle(.captureFailed(.pageUnavailable), now: at(2))
+        TestSupport.expectEqual(pageGone.phase, .fallbackAvailable(.captureUnavailable))
+
+        var denied = recordingMachine()
+        _ = denied.handle(.captureFailed(.permissionDenied), now: at(2))
+        TestSupport.expectEqual(denied.phase, .setupNeeded(.microphone))
+
+        var tooShort = recordingMachine()
+        _ = tooShort.handle(.doneTapped, now: at(0.75))
+        effects = tooShort.handle(.captureFailed(.noAudio), now: at(1))
+        TestSupport.expectEqual(effects, [.announce("No audio was recorded")])
+        TestSupport.expectEqual(tooShort.phase, .nothingToInsert(.noAudio, until: at(4)))
+    }
+
+    private static func testStartAndStopBackstops() {
+        var silent = readyMachine()
+        _ = silent.handle(.micPressBegan(documentID: nil), now: at(0))
+        _ = silent.handle(.micPressEnded, now: at(0.25))
+        TestSupport.expectEqual(silent.handle(.tick, now: at(3.5)), [])
+        TestSupport.expectEqual(silent.handle(.tick, now: at(4)), [
+            .cancelCapture,
+            .reportCapture(worked: false, failure: .startTimedOut),
+            .announce(fallbackText),
+        ])
+        TestSupport.expectEqual(silent.phase, .fallbackAvailable(.captureUnavailable))
+
+        var stuck = recordingMachine()
+        _ = stuck.handle(.doneTapped, now: at(2))
+        TestSupport.expectEqual(stuck.nextWakeUp, at(7))
+        TestSupport.expectEqual(stuck.handle(.tick, now: at(6.5)), [])
+        TestSupport.expectEqual(stuck.handle(.tick, now: at(7)), [
+            .cancelCapture,
+            .announce("The recording didn't finish. Try again."),
+        ])
+        TestSupport.expectEqual(stuck.phase, .error(message: "The recording didn't finish. Try again.", until: at(13)))
+    }
+
+    private static func testStrayCaptureCallbacks() {
+        var machine = readyMachine()
+        TestSupport.expectEqual(machine.handle(.captureStarted, now: t0), [])
+        TestSupport.expectEqual(machine.handle(.captureFailed(.startTimedOut), now: t0), [])
+        let stray = sampleAudio("freeflow-keyboard-stray")
+        TestSupport.expectEqual(machine.handle(.captureFinished(stray), now: t0), [.deleteAudio(stray.fileURL)])
+        TestSupport.expectEqual(machine.phase, .idle)
+
+        let audio = sampleAudio()
+        var processing = processingMachine(audio)
+        TestSupport.expectEqual(processing.handle(.captureFinished(audio), now: at(4)), [])
+        TestSupport.expectEqual(processing.handle(.captureFinished(stray), now: at(4)), [.deleteAudio(stray.fileURL)])
+        TestSupport.expectEqual(processing.handle(.captureFailed(.interrupted), now: at(4)), [])
+        TestSupport.expectEqual(processing.handle(.captureStarted, now: at(4)), [])
+        TestSupport.expectEqual(status(processing), .processing)
+
+        // Capture that ends by itself with audio still gets transcribed.
+        var ended = recordingMachine()
+        TestSupport.expectEqual(ended.handle(.captureFinished(audio), now: at(2)), [.runPipeline(attempt: 1, audioFileURL: audio.fileURL)])
+        TestSupport.expectEqual(status(ended), .processing)
+    }
+
+    private static func testMicPressRetriesFromResultStates() {
+        var fallback = readyMachine()
+        _ = fallback.handle(.micPressBegan(documentID: nil), now: at(0))
+        _ = fallback.handle(.captureFailed(.startTimedOut), now: at(2))
+        TestSupport.expectEqual(fallback.handle(.micPressBegan(documentID: nil), now: at(3)), [.startCapture])
+        TestSupport.expectEqual(fallback.attempt, 2)
+
+        var failed = recordingMachine()
+        _ = failed.handle(.captureFailed(.interrupted), now: at(2))
+        TestSupport.expectEqual(status(failed), .error)
+        TestSupport.expectEqual(failed.handle(.micPressBegan(documentID: nil), now: at(3)), [.startCapture])
+        TestSupport.expectEqual(status(failed), .starting)
+    }
+
+    // MARK: Pipeline results
+
+    private static func testEmptyTranscriptIsNothingToInsert() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        let empty = DictationResult(rawTranscript: "", text: "", pressEnter: false, route: .empty, usedRawFallback: false)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: empty, document: document()), now: at(4))
+        TestSupport.expectEqual(effects, [
+            .deleteAudio(audio.fileURL),
+            .recordHistory(draft(.nothingToInsert, at: 4, raw: "", text: "", route: .empty)),
+            .announce("Nothing to transcribe"),
+        ])
+        TestSupport.expectEqual(machine.phase, .nothingToInsert(.emptyTranscript, until: at(7)))
+
+        var spaces = processingMachine(audio)
+        let blank = spaces.handle(.pipelineFinished(attempt: 1, result: result("  \n"), document: document()), now: at(4))
+        TestSupport.expectEqual(insertions(blank), [])
+        TestSupport.expectEqual(status(spaces), .nothingToInsert)
+    }
+
+    private static func testPressEnterInsertsNewline() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        let finished = result("Ship it.", raw: "ship it press enter", pressEnter: true)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: finished, document: document(before: nil)), now: at(4))
+        TestSupport.expectEqual(effects, [
+            .deleteAudio(audio.fileURL),
+            .insert(TranscriptRouting.insertionText(for: "Ship it.", precedingText: nil)),
+            .insert("\n"),
+            .recordHistory(draft(.inserted, at: 4, raw: "ship it press enter", text: "Ship it.")),
+            .announce("Inserted"),
+        ])
+    }
+
+    private static func testPressEnterAloneInsertsOnlyNewline() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        let enterOnly = DictationResult(rawTranscript: "press enter", text: "", pressEnter: true, route: .empty, usedRawFallback: false)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: enterOnly, document: document()), now: at(4))
+        TestSupport.expectEqual(effects, [
+            .deleteAudio(audio.fileURL),
+            .insert("\n"),
+            .recordHistory(draft(.inserted, at: 4, raw: "press enter", text: "", route: .empty)),
+            .announce("Pressed return"),
+        ])
+        TestSupport.expectEqual(machine.phase, .inserted(.returnOnly, until: at(5.5)))
+    }
+
+    private static func testRawFallbackIsReported() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        let fallback = result("um hello there", rawFallback: true)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: fallback, document: document()), now: at(4))
+        TestSupport.expect(
+            effects.contains(.recordHistory(draft(.rawFallback, at: 4, raw: "um hello there", text: "um hello there"))),
+            "A raw fallback must be recorded as rawFallback"
+        )
+        TestSupport.expectEqual(insertions(effects), [TranscriptRouting.insertionText(for: "um hello there", precedingText: "Dear Sam,")])
+        TestSupport.expectEqual(machine.phase, .inserted(.rawFallback, until: at(5.5)))
+        TestSupport.expectEqual(text(machine), "Inserted without cleanup")
+    }
+
+    private static func testChangedFieldIsNotInserted() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio, documentID: fieldA)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: result("Hello."), document: document(fieldB)), now: at(4))
+        TestSupport.expectEqual(effects, [
+            .deleteAudio(audio.fileURL),
+            .recordHistory(draft(.notInserted, at: 4, raw: "Hello.", text: "Hello.")),
+            .announce(KeyboardDictationMachine.fieldChangedMessage),
+        ])
+        TestSupport.expectEqual(machine.phase, .error(message: KeyboardDictationMachine.fieldChangedMessage, until: at(10)))
+        TestSupport.expect(KeyboardDictationMachine.fieldChangedMessage.contains("Insert last"), "The message must point to Insert last")
+        TestSupport.expect(KeyboardDictationMachine.fieldChangedMessage.count <= 90, "The message must fit the 90-character limit")
+
+        var enter = processingMachine(audio, documentID: fieldA)
+        let enterOnly = DictationResult(rawTranscript: "press enter", text: "", pressEnter: true, route: .empty, usedRawFallback: false)
+        let enterEffects = enter.handle(.pipelineFinished(attempt: 1, result: enterOnly, document: document(fieldB)), now: at(4))
+        TestSupport.expectEqual(insertions(enterEffects), [])
+        TestSupport.expectEqual(enter.phase, .error(message: KeyboardDictationMachine.fieldChangedReturnMessage, until: at(10)))
+    }
+
+    private static func testUnknownDocumentStillInserts() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio, documentID: nil)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: result("Hi."), document: document(fieldB, before: "")), now: at(4))
+        TestSupport.expectEqual(insertions(effects), [TranscriptRouting.insertionText(for: "Hi.", precedingText: "")])
+        TestSupport.expectEqual(status(machine), .inserted)
+
+        TestSupport.expect(!KeyboardDictationMachine.documentChanged(from: nil, to: fieldA), "An unknown start field must not block insertion")
+        TestSupport.expect(!KeyboardDictationMachine.documentChanged(from: fieldA, to: nil), "An unknown current field must not block insertion")
+        TestSupport.expect(!KeyboardDictationMachine.documentChanged(from: fieldA, to: fieldA), "The same field is unchanged")
+        TestSupport.expect(KeyboardDictationMachine.documentChanged(from: fieldA, to: fieldB), "A different field is a change")
+    }
+
+    private static func testHiddenKeyboardDoesNotInsert() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        TestSupport.expectEqual(machine.handle(.disappeared, now: at(4)), [])
+        TestSupport.expectEqual(status(machine), .processing)
+
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: result("Hello."), document: document()), now: at(5))
+        TestSupport.expectEqual(insertions(effects), [])
+        TestSupport.expect(
+            effects.contains(.recordHistory(draft(.notInserted, at: 5, raw: "Hello.", text: "Hello."))),
+            "A result the keyboard couldn't insert must stay in history for Insert last"
+        )
+        TestSupport.expectEqual(status(machine), .error)
+
+        _ = machine.handle(.appeared, now: at(20))
+        TestSupport.expectEqual(machine.phase, .idle)
+    }
+
+    private static func testStaleAndCancelledPipelineResultsAreIgnored() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        TestSupport.expectEqual(machine.handle(.pipelineFinished(attempt: 2, result: result("Wrong."), document: document()), now: at(4)), [])
+        TestSupport.expectEqual(machine.handle(.pipelineFailed(attempt: 0, message: "Old"), now: at(4)), [])
+        TestSupport.expectEqual(status(machine), .processing)
+
+        _ = machine.handle(.cancelTapped, now: at(4))
+        _ = machine.handle(.micPressBegan(documentID: fieldA), now: at(5))
+        TestSupport.expectEqual(machine.attempt, 2)
+        _ = machine.handle(.micPressEnded, now: at(5.25))
+        _ = machine.handle(.captureStarted, now: at(5.5))
+        _ = machine.handle(.doneTapped, now: at(7))
+        let second = sampleAudio("freeflow-keyboard-second")
+        TestSupport.expectEqual(machine.handle(.captureFinished(second), now: at(7.25)), [.runPipeline(attempt: 2, audioFileURL: second.fileURL)])
+        TestSupport.expectEqual(machine.handle(.pipelineFinished(attempt: 1, result: result("First."), document: document()), now: at(8)), [])
+        let effects = machine.handle(.pipelineFinished(attempt: 2, result: result("Second."), document: document()), now: at(8))
+        TestSupport.expectEqual(insertions(effects), [TranscriptRouting.insertionText(for: "Second.", precedingText: "Dear Sam,")])
+
+        var stopping = recordingMachine()
+        _ = stopping.handle(.doneTapped, now: at(2))
+        TestSupport.expectEqual(stopping.handle(.pipelineFinished(attempt: 1, result: result("Early."), document: document()), now: at(2.5)), [])
+        TestSupport.expectEqual(stopping.handle(.pipelineFailed(attempt: 1, message: "Early"), now: at(2.5)), [])
+        TestSupport.expectEqual(status(stopping), .processing)
+    }
+
+    private static func testPipelineFailureShowsTruncatedMessage() {
+        let audio = sampleAudio()
+        var machine = processingMachine(audio)
+        let long = String(repeating: "Provider error detail ", count: 8)
+        let shown = KeyboardDictationMachine.displayMessage(long)
+        TestSupport.expectEqual(shown.count, 90)
+        TestSupport.expect(shown.hasSuffix("…"), "A cut message must end in an ellipsis")
+
+        let effects = machine.handle(.pipelineFailed(attempt: 1, message: long), now: at(4))
+        let failed = KeyboardDictationHistoryDraft(
+            createdAt: at(4),
+            status: .failed,
+            rawTranscript: "",
+            text: "",
+            route: nil,
+            errorMessage: shown,
+            durationSeconds: 2.5
+        )
+        TestSupport.expectEqual(effects, [.deleteAudio(audio.fileURL), .recordHistory(failed), .announce(shown)])
+        TestSupport.expectEqual(machine.phase, .error(message: shown, until: at(10)))
+        TestSupport.expectEqual(KeyboardDictationDisplay(machine: machine).tone, .failure)
+        TestSupport.expectEqual(machine.nextWakeUp, at(10))
+
+        _ = machine.handle(.tick, now: at(9.5))
+        TestSupport.expectEqual(status(machine), .error)
+        _ = machine.handle(.tick, now: at(10))
+        TestSupport.expectEqual(machine.phase, .idle)
+
+        let timeout = DictationPipeline.userFacingMessage(for: URLError(.timedOut), isOnline: true)
+        TestSupport.expectEqual(timeout, "Request timed out — try again")
+        TestSupport.expectEqual(KeyboardDictationMachine.displayMessage(timeout), timeout)
+    }
+
+    private static func testMessageFormattingMatchesMacOS() {
+        TestSupport.expectEqual(KeyboardDictationMachine.maximumMessageLength, 90)
+        let exactly90 = String(repeating: "a", count: 90)
+        TestSupport.expectEqual(KeyboardDictationMachine.displayMessage(exactly90), exactly90)
+        let ninetyOne = String(repeating: "b", count: 91)
+        TestSupport.expectEqual(KeyboardDictationMachine.displayMessage(ninetyOne), String(repeating: "b", count: 89) + "…")
+        TestSupport.expectEqual(KeyboardDictationMachine.displayMessage("Line one\n  line two  "), "Line one line two")
+        TestSupport.expectEqual(KeyboardDictationMachine.displayMessage(" \n "), "Something went wrong")
+    }
+
+    private static func testTimedStatesExpireToTheRestingState() {
+        var machine = readyMachine()
+        _ = machine.handle(.insertLastTapped(text: nil, document: document()), now: at(0))
+        TestSupport.expectEqual(machine.nextWakeUp, at(3))
+
+        // Hidden and shown again before the deadline: still showing.
+        _ = machine.handle(.disappeared, now: at(1))
+        _ = machine.handle(.appeared, now: at(2))
+        TestSupport.expectEqual(status(machine), .nothingToInsert)
+
+        // Setup changes wait for the message to finish, then show.
+        _ = machine.handle(.setupChanged(noAPIKey), now: at(2.5))
+        TestSupport.expectEqual(status(machine), .nothingToInsert)
+        _ = machine.handle(.tick, now: at(3))
+        TestSupport.expectEqual(machine.phase, .setupNeeded(.apiKey))
+
+        // Shown again after the deadline: back to rest at once.
+        var late = readyMachine()
+        _ = late.handle(.insertLastTapped(text: "Again.", document: document()), now: at(0))
+        _ = late.handle(.disappeared, now: at(0.5))
+        _ = late.handle(.appeared, now: at(1.5))
+        TestSupport.expectEqual(late.phase, .idle)
+    }
+
+    // MARK: Insert last
+
+    private static func testInsertLast() {
+        var machine = readyMachine()
+        var effects = machine.handle(.insertLastTapped(text: nil, document: document()), now: at(1))
+        TestSupport.expectEqual(effects, [.announce("Nothing to insert yet")])
+        TestSupport.expectEqual(machine.phase, .nothingToInsert(.noHistory, until: at(4)))
+
+        effects = machine.handle(.insertLastTapped(text: " \n", document: document()), now: at(1.5))
+        TestSupport.expectEqual(effects, [.announce("Nothing to insert yet")])
+
+        effects = machine.handle(.insertLastTapped(text: "Earlier dictation.", document: document(before: "Re:")), now: at(2))
+        TestSupport.expectEqual(effects, [
+            .insert(TranscriptRouting.insertionText(for: "Earlier dictation.", precedingText: "Re:")),
+            .announce("Inserted your last dictation"),
+        ])
+        TestSupport.expectEqual(machine.phase, .inserted(.lastDictation, until: at(3.5)))
+
+        var busy = recordingMachine()
+        TestSupport.expectEqual(busy.handle(.insertLastTapped(text: "Earlier.", document: document()), now: at(1)), [])
+        TestSupport.expect(!KeyboardDictationDisplay(machine: busy).insertLastEnabled, "Insert last must be disabled while recording")
+        TestSupport.expectEqual(status(busy), .recording)
+    }
+
+    // MARK: Open-the-app fallback
+
+    private static func testFallbackHandoffFlow() {
+        var machine = readyMachine()
+        _ = machine.handle(.micPressBegan(documentID: fieldA), now: at(0))
+        _ = machine.handle(.captureFailed(.pageUnavailable), now: at(0.25))
+
+        var effects = machine.handle(.openAppTapped(newSessionID: sessionOne), now: at(1))
+        TestSupport.expectEqual(effects, [.openApp(sessionID: sessionOne)])
+        TestSupport.expectEqual(machine.phase, .waitingForApp(sessionID: sessionOne, since: at(1), nextCheck: at(2)))
+        let display = KeyboardDictationDisplay(machine: machine)
+        TestSupport.expectEqual(display.status, .waitingForApp)
+        TestSupport.expectEqual(display.trailingAction, .openApp)
+        TestSupport.expectEqual(display.cancelTitle, "Stop waiting")
+
+        // While visible, it checks the store every second.
+        TestSupport.expectEqual(machine.nextWakeUp, at(2))
+        TestSupport.expectEqual(machine.handle(.tick, now: at(1.5)), [])
+        TestSupport.expectEqual(machine.handle(.tick, now: at(2)), [.checkForAppResult])
+        effects = machine.handle(.handoffPending(sessionID: sessionOne), now: at(2))
+        TestSupport.expectEqual(effects, [])
+        TestSupport.expectEqual(machine.phase, .waitingForApp(sessionID: sessionOne, since: at(1), nextCheck: at(3)))
+
+        // Hidden (the user is in FreeFlow), only the wait limit remains.
+        _ = machine.handle(.disappeared, now: at(2.5))
+        TestSupport.expectEqual(machine.nextWakeUp, at(181))
+        TestSupport.expectEqual(machine.handle(.tick, now: at(3)), [])
+
+        // Opening again reuses the session being waited on.
+        _ = machine.handle(.appeared, now: at(4))
+        TestSupport.expectEqual(machine.handle(.openAppTapped(newSessionID: sessionTwo), now: at(5)), [.openApp(sessionID: sessionOne)])
+
+        // With no way to open the app, say so and stop waiting.
+        effects = machine.handle(.appOpenFailed, now: at(5))
+        TestSupport.expectEqual(effects, [.stopAwaitingApp, .announce("Couldn't open FreeFlow. Open it from your Home Screen.")])
+        TestSupport.expectEqual(machine.phase, .fallbackAvailable(.openFailed))
+        TestSupport.expectEqual(machine.handle(.openAppTapped(newSessionID: sessionTwo), now: at(6)), [.openApp(sessionID: sessionTwo)])
+
+        var idle = readyMachine()
+        TestSupport.expectEqual(idle.handle(.openAppTapped(newSessionID: sessionTwo), now: t0), [])
+        TestSupport.expectEqual(idle.handle(.appOpenFailed, now: t0), [])
+        TestSupport.expectEqual(idle.phase, .idle)
+    }
+
+    private static func testHandoffResultInsertion() {
+        var machine = readyMachine()
+        _ = machine.handle(.handoffPending(sessionID: sessionOne), now: at(0))
+        TestSupport.expectEqual(machine.phase, .waitingForApp(sessionID: sessionOne, since: at(0), nextCheck: at(1)))
+
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "From the app.", pressEnter: true)
+        let effects = machine.handle(.handoffResultArrived(pending, document: document(before: "Hi")), now: at(12))
+        TestSupport.expectEqual(effects, [
+            .stopAwaitingApp,
+            .insert(TranscriptRouting.insertionText(for: "From the app.", precedingText: "Hi")),
+            .insert("\n"),
+            .announce("Inserted from FreeFlow"),
+        ])
+        TestSupport.expectEqual(machine.phase, .inserted(.handoff, until: at(13.5)))
+
+        var stale = readyMachine()
+        _ = stale.handle(.handoffPending(sessionID: sessionOne), now: at(0))
+        let old = PendingDictation(sessionID: sessionOne, createdAt: at(0), text: "Old.", pressEnter: false)
+        TestSupport.expectEqual(stale.handle(.handoffResultArrived(old, document: document()), now: at(500)), [.stopAwaitingApp])
+        TestSupport.expectEqual(stale.phase, .idle)
+
+        var empty = readyMachine()
+        let blank = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: " ", pressEnter: false)
+        TestSupport.expectEqual(empty.handle(.handoffResultArrived(blank, document: document()), now: at(11)), [
+            .stopAwaitingApp,
+            .announce("Nothing to transcribe"),
+        ])
+
+        var enterOnly = readyMachine()
+        let enter = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "", pressEnter: true)
+        TestSupport.expectEqual(enterOnly.handle(.handoffResultArrived(enter, document: document()), now: at(11)), [
+            .stopAwaitingApp,
+            .insert("\n"),
+            .announce("Pressed return"),
+        ])
+
+        var busy = recordingMachine()
+        TestSupport.expectEqual(busy.handle(.handoffResultArrived(pending, document: document()), now: at(12)), [])
+        TestSupport.expectEqual(busy.handle(.handoffPending(sessionID: sessionOne), now: at(12)), [])
+        TestSupport.expectEqual(status(busy), .recording)
+    }
+
+    private static func testHandoffWaitEnds() {
+        var machine = readyMachine()
+        _ = machine.handle(.handoffPending(sessionID: sessionOne), now: at(0))
+        TestSupport.expectEqual(status(machine), .waitingForApp)
+
+        var cancelled = machine
+        TestSupport.expectEqual(cancelled.handle(.cancelTapped, now: at(1)), [.stopAwaitingApp])
+        TestSupport.expectEqual(cancelled.phase, .idle)
+
+        var forgotten = machine
+        TestSupport.expectEqual(forgotten.handle(.handoffAbsent, now: at(1)), [])
+        TestSupport.expectEqual(forgotten.phase, .idle)
+
+        var replaced = machine
+        TestSupport.expectEqual(replaced.handle(.micPressBegan(documentID: nil), now: at(1)), [.stopAwaitingApp, .startCapture])
+        TestSupport.expectEqual(status(replaced), .starting)
+
+        var insertedLast = machine
+        let effects = insertedLast.handle(.insertLastTapped(text: "Kept.", document: document()), now: at(1))
+        TestSupport.expectEqual(effects.first, .stopAwaitingApp)
+        TestSupport.expectEqual(status(insertedLast), .inserted)
+
+        var expired = machine
+        TestSupport.expectEqual(expired.handle(.tick, now: at(PendingDictation.maxAge)), [.stopAwaitingApp])
+        TestSupport.expectEqual(expired.phase, .idle)
+
+        // A different session found in the store replaces the one waited on.
+        var other = machine
+        _ = other.handle(.handoffPending(sessionID: sessionTwo), now: at(5))
+        TestSupport.expectEqual(other.phase, .waitingForApp(sessionID: sessionTwo, since: at(5), nextCheck: at(6)))
+    }
+
+    // MARK: Lifecycle and feedback
+
+    private static func testDisappearingCancelsCapture() {
+        var starting = readyMachine()
+        _ = starting.handle(.micPressBegan(documentID: nil), now: at(0))
+        TestSupport.expectEqual(starting.handle(.disappeared, now: at(0.5)), [.cancelCapture])
+        TestSupport.expectEqual(starting.phase, .idle)
+        TestSupport.expect(!starting.isVisible, "The machine must know the keyboard is hidden")
+
+        var recording = recordingMachine()
+        TestSupport.expectEqual(recording.handle(.disappeared, now: at(2)), [.cancelCapture])
+        TestSupport.expectEqual(recording.phase, .idle)
+
+        var stopping = recordingMachine()
+        _ = stopping.handle(.doneTapped, now: at(2))
+        TestSupport.expectEqual(stopping.handle(.disappeared, now: at(2.25)), [.cancelCapture])
+        TestSupport.expectEqual(stopping.phase, .idle)
+
+        var idle = readyMachine()
+        TestSupport.expectEqual(idle.handle(.disappeared, now: t0), [])
+        TestSupport.expectEqual(idle.phase, .idle)
+    }
+
+    private static func testHapticsNeedFullAccess() {
+        var machine = recordingMachine()
+        let lostAccess = KeyboardDictationSetup(hasFullAccess: false, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: nil)
+        _ = machine.handle(.setupChanged(lostAccess), now: at(1))
+        TestSupport.expectEqual(machine.handle(.doneTapped, now: at(2)), [.stopCapture])
+    }
+
+    // MARK: Display
+
+    private static func testDisplayForEveryPhase() {
+        let recording = KeyboardDictationMachine.Recording(attempt: 1, startedAt: t0, audioStartedAt: t0, gesture: .latched, documentID: nil)
+        let processing = KeyboardDictationMachine.Processing(attempt: 1, stoppedAt: t0, documentID: nil, heardAudio: true, audio: nil)
+        typealias Expectation = (
+            phase: KeyboardDictationMachine.Phase,
+            status: KeyboardDictationStatus,
+            mic: KeyboardDictationDisplay.Mic,
+            cancelTitle: String?,
+            trailing: KeyboardDictationDisplay.TrailingAction?,
+            insertLast: Bool
+        )
+        let expectations: [Expectation] = [
+            (.idle, .idle, .ready, nil, nil, true),
+            (.setupNeeded(.apiKey), .setupNeeded, .unavailable, nil, nil, true),
+            (.starting(recording), .starting, .starting, "Cancel", .done, false),
+            (.recording(recording), .recording, .recording, "Cancel", .done, false),
+            (.processing(processing), .processing, .processing, "Cancel", nil, false),
+            (.inserted(.dictation, until: t0), .inserted, .ready, nil, nil, true),
+            (.nothingToInsert(.noAudio, until: t0), .nothingToInsert, .ready, nil, nil, true),
+            (.error(message: "Synthetic failure", until: t0), .error, .ready, nil, nil, true),
+            (.fallbackAvailable(.captureUnavailable), .fallbackAvailable, .ready, "Not now", .openApp, true),
+            (.waitingForApp(sessionID: sessionOne, since: t0, nextCheck: t0), .waitingForApp, .ready, "Stop waiting", .openApp, true),
+        ]
+        for expectation in expectations {
+            let display = KeyboardDictationDisplay(machine: KeyboardDictationMachine(phase: expectation.phase))
+            TestSupport.expectEqual(display.status, expectation.status)
+            TestSupport.expectEqual(display.mic, expectation.mic)
+            TestSupport.expectEqual(display.cancelTitle, expectation.cancelTitle)
+            TestSupport.expectEqual(display.trailingAction, expectation.trailing)
+            TestSupport.expectEqual(display.insertLastEnabled, expectation.insertLast)
+            TestSupport.expect(!display.statusText.isEmpty, "Every state needs status text")
+            TestSupport.expect(display.statusText.count <= KeyboardDictationMachine.maximumMessageLength, "Status text must fit the status line")
+        }
+        TestSupport.expectEqual(Set(expectations.map { $0.status }), Set(KeyboardDictationStatus.allCases))
+
+        let error = KeyboardDictationDisplay(machine: KeyboardDictationMachine(phase: .error(message: "Synthetic failure", until: t0)))
+        TestSupport.expectEqual(error.statusText, "Synthetic failure")
+        let starting = KeyboardDictationDisplay(machine: KeyboardDictationMachine(phase: .starting(recording)))
+        TestSupport.expectEqual(starting.micAccessibilityLabel, "Stop dictation")
+        TestSupport.expectEqual(KeyboardDictationDisplay(machine: KeyboardDictationMachine()).micAccessibilityLabel, "Dictate")
+    }
+
+    private static func testDisplayWording() {
+        TestSupport.expectEqual(KeyboardDictationDisplay.idleText, "Tap the mic to dictate, or hold to talk")
+        TestSupport.expectEqual(KeyboardDictationDisplay.setupText(for: .microphone), "Open FreeFlow to allow the microphone")
+        TestSupport.expectEqual(KeyboardDictationDisplay.openAppTitle, "Open FreeFlow")
+        var texts: [String] = []
+        texts += KeyboardDictationSetupIssue.allCases.map(KeyboardDictationDisplay.setupText(for:))
+        texts += KeyboardDictationMachine.InsertedKind.allCases.map(KeyboardDictationDisplay.insertedText(for:))
+        texts += KeyboardDictationMachine.NothingReason.allCases.map(KeyboardDictationDisplay.nothingText(for:))
+        texts += KeyboardDictationMachine.FallbackReason.allCases.map(KeyboardDictationDisplay.fallbackText(for:))
+        texts += [
+            KeyboardDictationMachine.fieldChangedMessage,
+            KeyboardDictationMachine.fieldChangedReturnMessage,
+            KeyboardDictationMachine.interruptedMessage,
+            KeyboardDictationMachine.fileErrorMessage,
+            KeyboardDictationMachine.stopTimedOutMessage,
+            KeyboardDictationDisplay.waitingForAppText,
+        ]
+        for text in texts {
+            TestSupport.expect(!text.isEmpty && text.count <= 90, "'\(text)' must fit the status line")
+        }
+        TestSupport.expectEqual(Set(texts).count, texts.count)
+    }
+
+    private static func testDebugStatesCoverEveryStatus() {
+        TestSupport.expectEqual(KeyboardDebugDisplayState.defaultsKey, "ios_debug_keyboard_state")
+        for status in KeyboardDictationStatus.allCases {
+            guard let machine = KeyboardDebugDisplayState.machine(for: status.rawValue, now: t0) else {
+                TestSupport.expect(false, "'\(status.rawValue)' must force a display state")
+                return
+            }
+            TestSupport.expectEqual(KeyboardDictationDisplay(machine: machine).status, status)
+        }
+
+        TestSupport.expectEqual(KeyboardDebugDisplayState.machine(for: "setup-needed:microphone", now: t0)?.phase, .setupNeeded(.microphone))
+        TestSupport.expectEqual(KeyboardDebugDisplayState.machine(for: "setup-needed", now: t0)?.phase, .setupNeeded(.fullAccess))
+        TestSupport.expectEqual(KeyboardDebugDisplayState.machine(for: "recording:hold", now: t0)?.activeRecording?.gesture, .holding)
+        TestSupport.expectEqual(KeyboardDebugDisplayState.machine(for: "recording", now: t0)?.activeRecording?.gesture, .latched)
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: " inserted:rawFallback \n", now: t0)?.phase,
+            .inserted(.rawFallback, until: .distantFuture)
+        )
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: "nothing-to-insert:noHistory", now: t0)?.phase,
+            .nothingToInsert(.noHistory, until: .distantFuture)
+        )
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: "error:Quota: exceeded", now: t0)?.phase,
+            .error(message: "Quota: exceeded", until: .distantFuture)
+        )
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: "error", now: t0)?.phase,
+            .error(message: "Request timed out — try again", until: .distantFuture)
+        )
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: "fallback-available:lowMemory", now: t0)?.phase,
+            .fallbackAvailable(.lowMemory)
+        )
+        TestSupport.expect(KeyboardDebugDisplayState.machine(for: "Recording", now: t0) == nil, "State names are case-sensitive")
+        TestSupport.expect(KeyboardDebugDisplayState.machine(for: "", now: t0) == nil, "An empty value forces nothing")
+        TestSupport.expect(KeyboardDebugDisplayState.machine(for: "bogus:value", now: t0) == nil, "Unknown names force nothing")
+    }
+
+    // MARK: Keys
+
+    private static func testDeleteRepeatTiming() {
+        TestSupport.expectEqual(KeyboardDeleteRepeat.initialDelay, 0.5)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.repeatInterval, 0.1)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.wordDeletionDelay, 2)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.unit(afterHolding: 0.6), .character)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.unit(afterHolding: 1.99), .character)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.unit(afterHolding: 2), .word)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.unit(afterHolding: 9), .word)
+    }
+
+    private static func testWordDeletionCounts() {
+        func count(_ text: String?) -> Int {
+            KeyboardDeleteRepeat.deletionCount(for: .word, textBeforeCursor: text)
+        }
+        TestSupport.expectEqual(count("Hello world"), 5)
+        TestSupport.expectEqual(count("Hello world  "), 7)
+        TestSupport.expectEqual(count("Hello, world!"), 6)
+        TestSupport.expectEqual(count("one"), 3)
+        TestSupport.expectEqual(count("   "), 3)
+        TestSupport.expectEqual(count("first line\n"), 1)
+        TestSupport.expectEqual(count("first line\nsecond"), 6)
+        TestSupport.expectEqual(count("tab\tseparated"), 9)
+        TestSupport.expectEqual(count("wave 👋🏽"), 1)
+        TestSupport.expectEqual(count(""), 1)
+        TestSupport.expectEqual(count(nil), 1)
+        TestSupport.expectEqual(KeyboardDeleteRepeat.deletionCount(for: .character, textBeforeCursor: "Hello world"), 1)
+    }
+
+    private static func testReturnKeyKinds() {
+        let expected: [(rawValue: Int, title: String, prominent: Bool)] = [
+            (0, "return", false),
+            (1, "go", true),
+            (2, "search", true),
+            (3, "join", true),
+            (4, "next", true),
+            (5, "route", true),
+            (6, "search", true),
+            (7, "send", true),
+            (8, "search", true),
+            (9, "done", true),
+            (10, "emergency", true),
+            (11, "continue", true),
+        ]
+        for item in expected {
+            let kind = KeyboardReturnKeyKind(returnKeyTypeRawValue: item.rawValue)
+            TestSupport.expectEqual(kind.rawValue, item.rawValue)
+            TestSupport.expectEqual(kind.title, item.title)
+            TestSupport.expectEqual(kind.isProminent, item.prominent)
+            TestSupport.expect(!kind.accessibilityLabel.isEmpty, "Every return key needs a spoken label")
+        }
+        TestSupport.expectEqual(KeyboardReturnKeyKind.allCases.count, expected.count)
+        TestSupport.expectEqual(KeyboardReturnKeyKind(returnKeyTypeRawValue: nil), .standard)
+        TestSupport.expectEqual(KeyboardReturnKeyKind(returnKeyTypeRawValue: 99), .standard)
+        TestSupport.expectEqual(KeyboardReturnKeyKind.send.accessibilityLabel, "Send")
+        TestSupport.expectEqual(KeyboardReturnKeyKind.standard.accessibilityLabel, "Return")
+    }
+
+    private static func testWaveformShape() {
+        TestSupport.expectEqual(KeyboardWaveformShape.barCount, 9)
+        TestSupport.expectEqual(KeyboardWaveformShape.multipliers, [0.35, 0.55, 0.75, 0.9, 1.0, 0.9, 0.75, 0.55, 0.35])
+        TestSupport.expectEqual(KeyboardWaveformShape.amplitudes(level: 0, time: nil), Array(repeating: 0, count: 9))
+        TestSupport.expectEqual(KeyboardWaveformShape.amplitudes(level: 1, time: nil), KeyboardWaveformShape.multipliers)
+        TestSupport.expectEqual(KeyboardWaveformShape.amplitudes(level: 3, time: nil), KeyboardWaveformShape.multipliers)
+        TestSupport.expectEqual(KeyboardWaveformShape.amplitudes(level: -1, time: nil), Array(repeating: 0, count: 9))
+
+        let half = KeyboardWaveformShape.amplitudes(level: 0.5, time: nil)
+        TestSupport.expectApproximatelyEqual(half[4], 0.5)
+        TestSupport.expectApproximatelyEqual(half[0], 0.175)
+        TestSupport.expectApproximatelyEqual(half[8], 0.175)
+
+        for time in stride(from: 0.0, through: 2.0, by: 0.1) {
+            for level: Float in [0, 0.3, 1] {
+                let bars = KeyboardWaveformShape.amplitudes(level: level, time: time)
+                TestSupport.expectEqual(bars.count, 9)
+                TestSupport.expect(bars.allSatisfy { $0 >= 0 && $0 <= 1 }, "Pulsed bars must stay within 0...1")
+            }
+        }
+        let quiet = KeyboardWaveformShape.amplitudes(level: 0, time: 1)
+        TestSupport.expect(quiet.allSatisfy { $0 > 0 && $0 < 0.4 }, "Silence must still pulse gently, as on macOS")
+    }
+
+    // MARK: Contracts with the app and UI tests
+
+    private static func testHandoffURL() {
+        let session = UUID(uuidString: "12345678-90AB-4CDE-8F01-234567890ABC")!
+        let url = KeyboardHandoffURL.dictate(sessionID: session)
+        TestSupport.expectEqual(url.absoluteString, "freeflow://dictate?session=12345678-90AB-4CDE-8F01-234567890ABC")
+        TestSupport.expectEqual(KeyboardHandoffURL.sessionID(from: url), session)
+        TestSupport.expectEqual(
+            KeyboardHandoffURL.sessionID(from: URL(string: "freeflow://dictate?session=12345678-90ab-4cde-8f01-234567890abc")!),
+            session
+        )
+        let rejected = [
+            "freeflow://settings?session=12345678-90AB-4CDE-8F01-234567890ABC",
+            "https://dictate.invalid/?session=12345678-90AB-4CDE-8F01-234567890ABC",
+            "freeflow://dictate?session=not-a-uuid",
+            "freeflow://dictate",
+        ]
+        for string in rejected {
+            TestSupport.expect(KeyboardHandoffURL.sessionID(from: URL(string: string)!) == nil, "'\(string)' must not parse")
+        }
+    }
+
+    private static func testAccessibilityIdentifiersAndStatusNames() {
+        TestSupport.expectEqual(KeyboardAccessibilityID.mic, "freeflow.keyboard.mic")
+        TestSupport.expectEqual(KeyboardAccessibilityID.cancel, "freeflow.keyboard.cancel")
+        TestSupport.expectEqual(KeyboardAccessibilityID.done, "freeflow.keyboard.done")
+        TestSupport.expectEqual(KeyboardAccessibilityID.globe, "freeflow.keyboard.globe")
+        TestSupport.expectEqual(KeyboardAccessibilityID.space, "freeflow.keyboard.space")
+        TestSupport.expectEqual(KeyboardAccessibilityID.delete, "freeflow.keyboard.delete")
+        TestSupport.expectEqual(KeyboardAccessibilityID.returnKey, "freeflow.keyboard.return")
+        TestSupport.expectEqual(KeyboardAccessibilityID.insertLast, "freeflow.keyboard.insertLast")
+        TestSupport.expectEqual(KeyboardAccessibilityID.openApp, "freeflow.keyboard.openApp")
+        TestSupport.expectEqual(KeyboardAccessibilityID.status, "freeflow.keyboard.status")
+        TestSupport.expectEqual(KeyboardDictationStatus.allCases.map(\.rawValue), [
+            "idle",
+            "setup-needed",
+            "starting",
+            "recording",
+            "processing",
+            "inserted",
+            "nothing-to-insert",
+            "error",
+            "fallback-available",
+            "waiting-for-app",
+        ])
+        TestSupport.expectEqual(KeyboardDictationCaptureFailure.startTimedOut.rawValue, "startTimedOut")
+    }
+
+    private static func testHistoryDraftMakesKeyboardEntry() {
+        let id = UUID(uuidString: "41570000-0000-4000-8000-000000000001")!
+        let entry = draft(.rawFallback, at: 4, raw: "raw words", text: "Raw words.").makeEntry(id: id)
+        TestSupport.expectEqual(entry, HistoryEntry(
+            id: id,
+            createdAt: at(4),
+            source: .keyboard,
+            status: .rawFallback,
+            rawTranscript: "raw words",
+            text: "Raw words.",
+            route: .cleanup,
+            errorMessage: nil,
+            durationSeconds: 2.5
+        ))
+        TestSupport.expectEqual(HistoryLog.latestInsertableText(in: [entry]), "Raw words.")
+
+        let notInserted = draft(.notInserted, at: 5, raw: "keep me", text: "Keep me.").makeEntry()
+        TestSupport.expectEqual(HistoryLog.latestInsertableText(in: [notInserted]), "Keep me.")
+    }
 }
