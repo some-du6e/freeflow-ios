@@ -236,7 +236,9 @@ class FreeFlowUITestCase: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         for app in apps {
-            attachText(app.debugDescription, named: "\(prefix)-hierarchy")
+            // SpringBoard's application element has a blank label.
+            let label = app.label.trimmingCharacters(in: .whitespaces)
+            attachText(app.debugDescription, named: "\(prefix)-hierarchy-\(label.isEmpty ? "SpringBoard" : label)")
         }
     }
 

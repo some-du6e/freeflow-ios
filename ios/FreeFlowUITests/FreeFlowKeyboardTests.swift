@@ -82,7 +82,14 @@ final class FreeFlowKeyboardTests: FreeFlowUITestCase {
                 capture(step, hierarchyOf: [settings.settings])
             }
             report("Settings fallback:\n\(switches)")
-            app.activate()
+            // Turning on Full Access kills the containing app, so launch it
+            // again, with the same arguments, instead of activating it.
+            app.launch()
+            try require(
+                field.waitForExistence(timeout: Self.firstQueryTimeout),
+                "The test field did not appear after relaunching the app",
+                evidence: [app]
+            )
             try focus(field, keyboard: keyboard)
             outcome = keyboard.switchToFreeFlow()
         }

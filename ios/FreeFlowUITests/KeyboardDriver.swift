@@ -102,10 +102,12 @@ struct KeyboardDriver {
         var taps = 0
         while taps < maxGlobeTaps, let globe = globeKey {
             let systemKeysWereVisible = systemKeysVisible
+            // The globe's value names the keyboard a tap switches to.
+            let next = globe.textValue
             globe.tap()
             taps += 1
             if let element = waitForKeyboardElement(mic, timeout: 4) {
-                return .found(element, how: "\(taps) globe tap(s)")
+                return .found(element, how: "\(taps) globe tap(s); the globe named \"\(next)\" as next")
             }
             if dismissKeyboardIntroduction(), let element = waitForKeyboardElement(mic, timeout: 3) {
                 return .found(element, how: "\(taps) globe tap(s) and a dismissed introduction")

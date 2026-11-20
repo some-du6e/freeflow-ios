@@ -114,6 +114,20 @@ configure() {
 
     echo "::group::Install the app"
     xcrun simctl install "$udid" "$app"
+    # iOS drops AppleKeyboards entries it can't resolve, so wait until the
+    # extension is registered before naming it there.
+    local attempt registered=""
+    for attempt in $(seq 1 30); do
+        registered=$(xcrun simctl spawn "$udid" pluginkit -m -v -p com.apple.keyboard-service 2>/dev/null \
+            | grep -F "$keyboard_id" || true)
+        [ -n "$registered" ] && break
+        sleep 1
+    done
+    if [ -n "$registered" ]; then
+        echo "Registered keyboard extension: $registered"
+    else
+        echo "::warning::pluginkit does not list $keyboard_id after 30 seconds"
+    fi
     echo "::endgroup::"
 
     echo "::group::Grant the microphone"
@@ -142,10 +156,14 @@ configure() {
     # iOS minimizes the software keyboard once it has seen a hardware one.
     sim_defaults write com.apple.keyboard.preferences AutomaticMinimizationEnabled -bool NO
     sim_defaults write com.apple.Preferences HardwareKeyboardLastSeen -bool NO
-    # Different iOS versions read the Slide to Type flag from different
-    # domains, so set it in each.
+    # Different iOS versions read the introduction flags from different
+    # domains, so set them in each.
+    local domain flag
     for domain in com.apple.keyboard.preferences com.apple.Preferences -g; do
-        sim_defaults write "$domain" DidShowContinuousPathIntroduction -bool YES
+        for flag in DidShowContinuousPathIntroduction DidShowGestureKeyboardIntroduction \
+            KeyboardDidShowProductivityTutorial UIKeyboardDidShowInternationalInfoIntroduction; do
+            sim_defaults write "$domain" "$flag" -bool YES
+        done
     done
     sim_defaults write com.apple.keyboard.preferences KeyboardContinuousPathEnabled -bool NO
     echo "::endgroup::"
@@ -162,6 +180,9 @@ configure() {
     echo "::group::Boot the simulator again"
     xcrun simctl boot "$udid"
     xcrun simctl bootstatus "$udid" -b
+    # A fixed status bar keeps the screenshots free of the runner's clock.
+    xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 \
+        || echo "Could not override the status bar"
     echo "::endgroup::"
 
     # What the tests will start from, before any Settings fallback changes it.
@@ -232,16 +253,18 @@ PY
     # System log lines about Full Access, if the frameworks log any. They
     # come from the simulator's own processes and the tests use synthetic
     # content only.
-    echo "::group::Simulator log lines about Full Access (tccd and others)"
+    # pkd asks tccd for the containing app's Full Access before it launches
+    # the keyboard, and picks the keyboard's sandbox from the answer.
+    echo "::group::Full Access answers tccd gave (kTCCServiceKeyboardNetwork)"
     xcrun simctl spawn "$udid" log show --last 30m --info --style compact --predicate \
-        'eventMessage CONTAINS[c] "KeyboardNetwork" OR eventMessage CONTAINS[c] "full access" OR eventMessage CONTAINS[c] "fullaccess" OR eventMessage CONTAINS[c] "open access" OR eventMessage CONTAINS[c] "openaccess"' \
-        | tail -n 150 || echo "Could not read the simulator log"
+        '(process == "tccd" OR process == "pkd") AND eventMessage CONTAINS "KeyboardNetwork"' \
+        | tail -n 120 || echo "Could not read the simulator log"
     echo "::endgroup::"
 
     echo "::group::Simulator log lines from the FreeFlow keyboard process"
     xcrun simctl spawn "$udid" log show --last 30m --info --style compact --predicate \
         'process == "FreeFlowKeyboard"' \
-        | tail -n 150 || echo "Could not read the simulator log"
+        | tail -n 80 || echo "Could not read the simulator log"
     echo "::endgroup::"
 }
 

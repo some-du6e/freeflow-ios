@@ -218,6 +218,9 @@ struct SystemSettingsDriver {
     }
 
     private func flip(_ element: XCUIElement) {
+        let before = switchValue(element)
+        // Taps during a push transition get swallowed; let the page settle.
+        Thread.sleep(forTimeInterval: 1)
         // The tappable part is the inner switch on recent iOS versions.
         let inner = element.switches.firstMatch
         if inner.exists {
@@ -225,6 +228,25 @@ struct SystemSettingsDriver {
         } else {
             element.tap()
         }
+        // Full Access asks for confirmation first, which counts as a change.
+        let changed = waitUntilSettled(timeout: 2) {
+            switchValue(element) != before || settings.alerts.firstMatch.exists
+        }
+        if !changed {
+            // Otherwise tap the toggle itself, at the row's right edge.
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        }
+    }
+
+    private func waitUntilSettled(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return condition()
     }
 
     private func waitForValue(_ element: XCUIElement, _ expected: Bool) -> Bool {

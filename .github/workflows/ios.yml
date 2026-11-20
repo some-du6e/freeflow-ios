@@ -191,6 +191,37 @@ jobs:
           xcrun xcresulttool export attachments \
             --path "$RESULT_BUNDLE_PATH" \
             --output-path "$ATTACHMENTS_PATH"
+          # Rename the exported files from UUIDs to the names the tests gave
+          # them, such as testName-03-freeflow-keyboard.png.
+          python3 - "$ATTACHMENTS_PATH" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          folder = sys.argv[1]
+          manifest_path = os.path.join(folder, "manifest.json")
+          with open(manifest_path) as file:
+              manifest = json.load(file)
+          taken = set()
+          for test in manifest:
+              for attachment in test.get("attachments", []):
+                  exported = attachment.get("exportedFileName")
+                  suggested = attachment.get("suggestedHumanReadableName") or exported
+                  if not exported or not os.path.exists(os.path.join(folder, exported)):
+                      continue
+                  name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}(?=\.[^.]+$)", "", suggested)
+                  stem, extension = os.path.splitext(name)
+                  candidate, number = name, 2
+                  while candidate in taken:
+                      candidate = f"{stem}-{number}{extension}"
+                      number += 1
+                  taken.add(candidate)
+                  os.rename(os.path.join(folder, exported), os.path.join(folder, candidate))
+                  attachment["exportedFileName"] = candidate
+          with open(manifest_path, "w") as file:
+              json.dump(manifest, file, indent=2)
+          PY
           ls -la "$ATTACHMENTS_PATH"
 
       - name: Upload test results
@@ -258,6 +289,16 @@ jobs:
             echo "::group::Built Info.plist: $(basename "$bundle")"
             plutil -p "$bundle/Info.plist" || true
             echo "::endgroup::"
+          done
+
+          # Whether each bundle that talks to the mock provider carries App
+          # Transport Security exceptions.
+          runner="$(dirname "$app")/FreeFlowUITests-Runner.app"
+          for bundle in "$app" "$appex" "$runner"; do
+            [ -f "$bundle/Info.plist" ] || continue
+            echo "NSAppTransportSecurity in $(basename "$bundle"):"
+            plutil -extract NSAppTransportSecurity json -o - "$bundle/Info.plist" 2>/dev/null || echo "  (none)"
+            echo
           done
 
           for bundle in "$app" "$appex"; do
