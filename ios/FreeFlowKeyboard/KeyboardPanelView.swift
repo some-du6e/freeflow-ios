@@ -28,6 +28,13 @@ final class KeyboardPanelView: UIView {
         accessibilityLabel: "Insert last dictation",
         identifier: KeyboardAccessibilityID.insertLast
     )
+    /// Shown in place of Insert last in the `pending-insert` state.
+    let insertPendingButton = KeyboardKeyButton(
+        title: KeyboardDictationDisplay.insertPendingTitle,
+        symbolName: "text.insert",
+        accessibilityLabel: KeyboardDictationDisplay.insertPendingTitle,
+        identifier: KeyboardAccessibilityID.insertPending
+    )
     let micButton = KeyboardMicButton()
     let cancelButton = KeyboardRoundButton(
         symbolName: "xmark",
@@ -77,6 +84,10 @@ final class KeyboardPanelView: UIView {
     private let statusFont = UIFont.systemFont(ofSize: 13, weight: .semibold)
     private let longStatusFont = UIFont.systemFont(ofSize: 12, weight: .medium)
     private var showsInsertLastTitle = true
+    /// The status label pins its trailing to whichever action button shows;
+    /// exactly one of these is active so a hidden button never shrinks it.
+    private var labelToInsertLast: NSLayoutConstraint?
+    private var labelToInsertPending: NSLayoutConstraint?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -118,7 +129,14 @@ final class KeyboardPanelView: UIView {
         }
         doneButton.isHidden = display.trailingAction != .done
         openAppButton.isHidden = display.trailingAction != .openApp
+
+        // Insert last and the Insert-from-FreeFlow CTA share the status row's
+        // trailing slot; show one and pin the status label to it.
+        insertPendingButton.isHidden = !display.pendingInsertVisible
+        insertLastButton.isHidden = display.pendingInsertVisible
         insertLastButton.isEnabled = display.insertLastEnabled
+        labelToInsertLast?.isActive = !display.pendingInsertVisible
+        labelToInsertPending?.isActive = display.pendingInsertVisible
     }
 
     func configureKeys(showsGlobe: Bool, returnKind: KeyboardReturnKeyKind, returnEnabled: Bool) {
@@ -171,11 +189,16 @@ final class KeyboardPanelView: UIView {
         }
         spaceKey.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let views: [UIView] = [statusLabel, insertLastButton, micButton, cancelButton, doneButton, openAppButton, bottomRow]
+        let views: [UIView] = [
+            statusLabel, insertLastButton, insertPendingButton, micButton,
+            cancelButton, doneButton, openAppButton, bottomRow,
+        ]
         for view in views {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
+        insertPendingButton.style = .prominent
+        insertPendingButton.isHidden = true
         addLayoutGuide(middleGuide)
 
         // Fixed sizes give way (999) rather than conflict while iOS sizes
@@ -191,15 +214,27 @@ final class KeyboardPanelView: UIView {
         let returnWidth = returnKey.widthAnchor.constraint(equalToConstant: 92)
         returnWidth.priority = UILayoutPriority(999)
 
+        // Only the active one pins the label, so the hidden button's width
+        // never steals room from the status line.
+        let labelToInsertLast = statusLabel.trailingAnchor.constraint(equalTo: insertLastButton.leadingAnchor, constant: -10)
+        let labelToInsertPending = statusLabel.trailingAnchor.constraint(equalTo: insertPendingButton.leadingAnchor, constant: -10)
+        labelToInsertLast.isActive = true
+        self.labelToInsertLast = labelToInsertLast
+        self.labelToInsertPending = labelToInsertPending
+
         NSLayoutConstraint.activate([
             statusLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             statusLabel.heightAnchor.constraint(equalToConstant: Self.statusHeight),
-            statusLabel.trailingAnchor.constraint(equalTo: insertLastButton.leadingAnchor, constant: -10),
 
             insertLastButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             insertLastButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
             insertLastButton.heightAnchor.constraint(equalToConstant: 32),
+
+            insertPendingButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            insertPendingButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
+            insertPendingButton.heightAnchor.constraint(equalToConstant: 32),
+            insertPendingButton.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 120),
 
             middleGuide.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 4),
             middleGuide.bottomAnchor.constraint(equalTo: bottomRow.topAnchor, constant: -6),

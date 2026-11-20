@@ -206,6 +206,7 @@ final class KeyboardViewController: UIInputViewController {
         panel.doneButton.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
         panel.openAppButton.addTarget(self, action: #selector(openAppTapped), for: .touchUpInside)
         panel.insertLastButton.addTarget(self, action: #selector(insertLastTapped), for: .touchUpInside)
+        panel.insertPendingButton.addTarget(self, action: #selector(insertPendingTapped), for: .touchUpInside)
         // Tap switches keyboards; touch and hold shows the keyboard list.
         panel.globeKey.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
         panel.spaceKey.addTarget(self, action: #selector(spaceTapped), for: .touchUpInside)
@@ -266,6 +267,12 @@ final class KeyboardViewController: UIInputViewController {
         UIDevice.current.playInputClick()
         let text = KeyboardInsertLast.text(remembered: Self.rememberedText, history: HistoryStore.shared.load())
         send(.insertLastTapped(text: text, document: currentDocument()))
+    }
+
+    @objc private func insertPendingTapped() {
+        guard !isShowingDebugState else { return }
+        UIDevice.current.playInputClick()
+        send(.insertPendingTapped(document: currentDocument()))
     }
 
     @objc private func spaceTapped() {
@@ -489,7 +496,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func openContainingApp(sessionID: UUID) {
         PendingDictationStore.shared.awaitedSessionID = sessionID
-        handoffLedger.recordOpen(sessionID: sessionID, at: Date())
+        handoffLedger.recordOpen(sessionID: sessionID, documentID: textDocumentProxy.documentIdentifier, at: Date())
         // Start from the view iOS put in the keyboard window; its responder
         // chain ends at the extension's UIApplication.
         let responder: UIResponder
@@ -521,7 +528,11 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
         if let pending = store.take(sessionID: sessionID, now: Date()) {
-            send(.handoffResultArrived(pending, document: currentDocument()))
+            send(.handoffResultArrived(
+                pending,
+                expectedDocumentID: handoffLedger.documentID(sessionID: sessionID),
+                document: currentDocument()
+            ))
         } else {
             send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
         }

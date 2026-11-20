@@ -81,6 +81,14 @@ enum KeyboardDebugDisplayState {
             phase = .fallbackAvailable(KeyboardDictationMachine.FallbackReason(rawValue: variant) ?? .captureUnavailable)
         case .waitingForApp:
             phase = .waitingForApp(sessionID: sampleSessionID, since: now, nextCheck: .distantFuture)
+        case .pendingInsert:
+            let pending = PendingDictation(
+                sessionID: sampleSessionID,
+                createdAt: now,
+                text: "Recorded in the FreeFlow app.",
+                pressEnter: false
+            )
+            phase = .pendingInsert(pending, until: .distantFuture)
         }
         return KeyboardDictationMachine(phase: phase, setup: setup, isVisible: true, attempt: 1)
     }

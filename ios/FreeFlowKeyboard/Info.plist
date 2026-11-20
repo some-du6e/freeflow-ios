@@ -26,6 +26,11 @@
 	<string>$(AppIdentifierPrefix)$(FREEFLOW_BUNDLE_ID_PREFIX).shared</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>FreeFlow needs microphone access to transcribe your speech.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>

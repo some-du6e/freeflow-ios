@@ -32,24 +32,43 @@ enum KeyboardInsertLast {
 /// When this keyboard last opened FreeFlow for the fallback, kept in the
 /// keyboard's own defaults rather than the App Group. A later keyboard
 /// process uses it to keep counting the wait from the real start, and to let
-/// go of a session that ended long ago. Holds a session ID and a time only.
+/// go of a session that ended long ago. It also records the field the
+/// keyboard was in, so the result is auto-inserted only if the field matches
+/// on return. Holds a session ID, a time and a field identifier only — no
+/// text.
 struct KeyboardHandoffLedger {
     static let sessionKey = "freeflow_keyboard_handoff_session"
     static let openedAtKey = "freeflow_keyboard_handoff_opened_at"
+    static let documentKey = "freeflow_keyboard_handoff_document"
 
     let defaults: UserDefaults
 
-    func recordOpen(sessionID: UUID, at date: Date) {
+    func recordOpen(sessionID: UUID, documentID: UUID?, at date: Date) {
         defaults.set(sessionID.uuidString, forKey: Self.sessionKey)
         defaults.set(date.timeIntervalSinceReferenceDate, forKey: Self.openedAtKey)
+        if let documentID {
+            defaults.set(documentID.uuidString, forKey: Self.documentKey)
+        } else {
+            defaults.removeObject(forKey: Self.documentKey)
+        }
     }
 
     /// nil unless the last recorded open was for `sessionID`.
     func openedAt(sessionID: UUID) -> Date? {
-        guard defaults.string(forKey: Self.sessionKey) == sessionID.uuidString,
-              defaults.object(forKey: Self.openedAtKey) != nil else {
+        guard isCurrent(sessionID), defaults.object(forKey: Self.openedAtKey) != nil else {
             return nil
         }
         return Date(timeIntervalSinceReferenceDate: defaults.double(forKey: Self.openedAtKey))
+    }
+
+    /// The field the keyboard was in when it opened the app for `sessionID`,
+    /// or nil if unknown or the session doesn't match.
+    func documentID(sessionID: UUID) -> UUID? {
+        guard isCurrent(sessionID) else { return nil }
+        return defaults.string(forKey: Self.documentKey).flatMap(UUID.init(uuidString:))
+    }
+
+    private func isCurrent(_ sessionID: UUID) -> Bool {
+        defaults.string(forKey: Self.sessionKey) == sessionID.uuidString
     }
 }

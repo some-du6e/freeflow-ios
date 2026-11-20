@@ -13,6 +13,9 @@ enum KeyboardDictationStatus: String, Equatable, CaseIterable {
     case error
     case fallbackAvailable = "fallback-available"
     case waitingForApp = "waiting-for-app"
+    /// The app handed a result back into a field the keyboard isn't sure of,
+    /// so it waits for a tap on the Insert from FreeFlow CTA.
+    case pendingInsert = "pending-insert"
 }
 
 /// Accessibility identifiers for the keyboard's controls. UI tests depend on
@@ -27,6 +30,8 @@ enum KeyboardAccessibilityID {
     static let returnKey = "freeflow.keyboard.return"
     static let insertLast = "freeflow.keyboard.insertLast"
     static let openApp = "freeflow.keyboard.openApp"
+    /// The CTA shown in the `pending-insert` state.
+    static let insertPending = "freeflow.keyboard.insertPending"
     static let status = "freeflow.keyboard.status"
 }
 
@@ -67,6 +72,9 @@ struct KeyboardDictationDisplay: Equatable {
     var cancelTitle: String?
     var trailingAction: TrailingAction?
     var insertLastEnabled: Bool
+    /// When true the panel shows the Insert from FreeFlow CTA in place of
+    /// Insert last (the `pending-insert` state).
+    var pendingInsertVisible = false
 }
 
 extension KeyboardDictationDisplay {
@@ -74,9 +82,12 @@ extension KeyboardDictationDisplay {
     static let startingText = "Starting the microphone…"
     static let processingText = "Transcribing…"
     static let waitingForAppText = "Waiting for FreeFlow. Finish recording there, then swipe back."
+    static let pendingInsertText = "FreeFlow finished. Tap Insert from FreeFlow to add it here."
     static let openAppTitle = "Open FreeFlow"
+    static let insertPendingTitle = "Insert from FreeFlow"
     static let cancelButtonTitle = "Cancel"
     static let dismissFallbackTitle = "Not now"
+    static let dismissPendingTitle = "Dismiss"
     static let stopWaitingTitle = "Stop waiting"
     static let dictateLabel = "Dictate"
     static let stopLabel = "Stop dictation"
@@ -252,6 +263,18 @@ extension KeyboardDictationDisplay {
                 cancelTitle: Self.stopWaitingTitle,
                 trailingAction: .openApp,
                 insertLastEnabled: true
+            )
+        case .pendingInsert:
+            self.init(
+                status: .pendingInsert,
+                statusText: Self.pendingInsertText,
+                tone: .success,
+                mic: .ready,
+                micAccessibilityLabel: Self.dictateLabel,
+                cancelTitle: Self.dismissPendingTitle,
+                trailingAction: nil,
+                insertLastEnabled: false,
+                pendingInsertVisible: true
             )
         }
     }

@@ -122,7 +122,13 @@ enum KeyboardDictationEvent: Equatable {
     /// `message` is `DictationPipeline.userFacingMessage(for:isOnline:)`.
     case pipelineFailed(attempt: Int, message: String)
     /// `PendingDictationStore.take` returned the app's result.
-    case handoffResultArrived(PendingDictation, document: KeyboardDictationDocument)
+    /// `expectedDocumentID` is the field the keyboard opened the app from,
+    /// if this process knows it; the result is auto-inserted only when the
+    /// current field matches it.
+    case handoffResultArrived(PendingDictation, expectedDocumentID: UUID?, document: KeyboardDictationDocument)
+    /// The `pending-insert` CTA: insert the held handoff result into the
+    /// current field, which the tap makes an explicit choice.
+    case insertPendingTapped(document: KeyboardDictationDocument)
     /// The store is still waiting on `sessionID` and has no result yet.
     /// `openedAt` is when this keyboard opened the app for it, if known.
     case handoffPending(sessionID: UUID, openedAt: Date?)
@@ -263,6 +269,10 @@ struct KeyboardDictationMachine: Equatable {
         case error(message: String, until: Date)
         case fallbackAvailable(FallbackReason)
         case waitingForApp(sessionID: UUID, since: Date, nextCheck: Date)
+        /// The app handed a result back, but the keyboard isn't sure it's the
+        /// same field, so it waits for an explicit tap. Holds the result until
+        /// it's inserted or `until` (its freshness deadline) passes.
+        case pendingInsert(PendingDictation, until: Date)
     }
 
     private(set) var phase: Phase
@@ -293,7 +303,7 @@ struct KeyboardDictationMachine: Equatable {
         case .starting(let recording), .recording(let recording):
             return recording
         case .idle, .setupNeeded, .processing, .inserted, .nothingToInsert, .error,
-             .fallbackAvailable, .waitingForApp:
+             .fallbackAvailable, .waitingForApp, .pendingInsert:
             return nil
         }
     }
@@ -304,7 +314,7 @@ struct KeyboardDictationMachine: Equatable {
         case .starting, .recording, .processing:
             return true
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
-             .waitingForApp:
+             .waitingForApp, .pendingInsert:
             return false
         }
     }
@@ -333,6 +343,8 @@ struct KeyboardDictationMachine: Equatable {
         case .waitingForApp(_, let since, let nextCheck):
             let limit = since + Self.handoffWaitLimit
             return isVisible ? min(nextCheck, limit) : limit
+        case .pendingInsert(_, let until):
+            return until
         case .idle, .setupNeeded, .fallbackAvailable:
             return nil
         }
@@ -374,8 +386,10 @@ struct KeyboardDictationMachine: Equatable {
             return pipelineFinished(attempt: finishedAttempt, result: result, document: document, now: now)
         case .pipelineFailed(let failedAttempt, let message):
             return pipelineFailed(attempt: failedAttempt, message: message, now: now)
-        case .handoffResultArrived(let pending, let document):
-            return handoffResultArrived(pending, document: document, now: now)
+        case .handoffResultArrived(let pending, let expectedDocumentID, let document):
+            return handoffResultArrived(pending, expectedDocumentID: expectedDocumentID, document: document, now: now)
+        case .insertPendingTapped(let document):
+            return insertPendingTapped(document: document, now: now)
         case .handoffPending(let sessionID, let openedAt):
             return handoffPending(sessionID: sessionID, openedAt: openedAt, now: now)
         case .handoffAbsent:
@@ -411,6 +425,14 @@ struct KeyboardDictationMachine: Equatable {
         return start != current
     }
 
+    /// A provable field match: both identifiers are known and equal. An
+    /// unknown identifier on either side is treated as "not the same field",
+    /// so a handed-back result is never auto-inserted on a guess.
+    static func documentMatches(expected: UUID?, current: UUID?) -> Bool {
+        guard let expected, let current else { return false }
+        return expected == current
+    }
+
     // MARK: Transitions
 
     private var restingPhase: Phase {
@@ -442,14 +464,15 @@ struct KeyboardDictationMachine: Equatable {
             change(&recording)
             phase = .recording(recording)
         case .idle, .setupNeeded, .processing, .inserted, .nothingToInsert, .error,
-             .fallbackAvailable, .waitingForApp:
+             .fallbackAvailable, .waitingForApp, .pendingInsert:
             break
         }
     }
 
     private mutating func expireMessage(now: Date) {
         switch phase {
-        case .inserted(_, let until), .nothingToInsert(_, let until), .error(_, let until):
+        case .inserted(_, let until), .nothingToInsert(_, let until), .error(_, let until),
+             .pendingInsert(_, let until):
             if now >= until { phase = restingPhase }
         case .idle, .setupNeeded, .starting, .recording, .processing, .fallbackAvailable,
              .waitingForApp:
@@ -463,7 +486,7 @@ struct KeyboardDictationMachine: Equatable {
         case .idle, .setupNeeded:
             phase = restingPhase
         case .starting, .recording, .processing, .inserted, .nothingToInsert, .error,
-             .fallbackAvailable, .waitingForApp:
+             .fallbackAvailable, .waitingForApp, .pendingInsert:
             break
         }
         return []
@@ -482,7 +505,7 @@ struct KeyboardDictationMachine: Equatable {
             phase = restingPhase
             return [.cancelCapture]
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
-             .waitingForApp:
+             .waitingForApp, .pendingInsert:
             return []
         }
     }
@@ -567,7 +590,9 @@ struct KeyboardDictationMachine: Equatable {
         case .waitingForApp:
             phase = restingPhase
             return [.stopAwaitingApp]
-        case .fallbackAvailable, .inserted, .nothingToInsert, .error:
+        case .fallbackAvailable, .inserted, .nothingToInsert, .error, .pendingInsert:
+            // Dismiss. A pending handoff result stays in history (the app
+            // wrote it), so Insert last can still recover it.
             phase = restingPhase
             return []
         case .idle, .setupNeeded:
@@ -583,7 +608,7 @@ struct KeyboardDictationMachine: Equatable {
         case .waitingForApp(let waitingSessionID, _, _):
             sessionID = waitingSessionID
         case .idle, .setupNeeded, .starting, .recording, .processing, .inserted, .nothingToInsert,
-             .error:
+             .error, .pendingInsert:
             return []
         }
         phase = .waitingForApp(sessionID: sessionID, since: now, nextCheck: now + Self.handoffCheckInterval)
@@ -645,7 +670,7 @@ struct KeyboardDictationMachine: Equatable {
             ))
             return [.runPipeline(attempt: recording.attempt, audioFileURL: audio.fileURL)]
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
-             .waitingForApp:
+             .waitingForApp, .pendingInsert:
             return [.deleteAudio(audio.fileURL)]
         }
     }
@@ -664,7 +689,7 @@ struct KeyboardDictationMachine: Equatable {
             guard processing.audio == nil else { return [] }
             heardAudio = processing.heardAudio
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
-             .waitingForApp:
+             .waitingForApp, .pendingInsert:
             return []
         }
 
@@ -803,23 +828,62 @@ struct KeyboardDictationMachine: Equatable {
 
     private mutating func handoffResultArrived(
         _ pending: PendingDictation,
+        expectedDocumentID: UUID?,
         document: KeyboardDictationDocument,
         now: Date
     ) -> [KeyboardDictationEffect] {
         guard !isBusy else { return [] }
+        // The result was taken from the store, so stop awaiting it either way.
         var effects: [KeyboardDictationEffect] = [.stopAwaitingApp]
 
         guard pending.isFresh(now: now) else {
-            if case .waitingForApp = phase { phase = restingPhase }
-            return effects
-        }
-        let hasText = Self.hasContent(pending.text)
-        guard hasText || pending.pressEnter else {
-            phase = .nothingToInsert(.emptyTranscript, until: now + Self.nothingToInsertDisplayDuration)
-            effects.append(announcement)
+            switch phase {
+            case .waitingForApp, .pendingInsert:
+                phase = restingPhase
+            default:
+                break
+            }
             return effects
         }
 
+        // Auto-insert only into the same field the keyboard opened the app
+        // from. Otherwise hold the result and wait for an explicit tap, so the
+        // text never lands in a field the user didn't dictate into.
+        if Self.documentMatches(expected: expectedDocumentID, current: document.identifier) {
+            return effects + performHandoffInsertion(pending, document: document, now: now)
+        }
+        phase = .pendingInsert(pending, until: pending.createdAt + PendingDictation.maxAge)
+        effects.append(announcement)
+        return effects
+    }
+
+    private mutating func insertPendingTapped(
+        document: KeyboardDictationDocument,
+        now: Date
+    ) -> [KeyboardDictationEffect] {
+        guard case .pendingInsert(let pending, _) = phase else { return [] }
+        guard pending.isFresh(now: now) else {
+            phase = restingPhase
+            return []
+        }
+        // The tap is the user's consent to insert into the current field.
+        return performHandoffInsertion(pending, document: document, now: now)
+    }
+
+    /// Inserts a handoff result and moves to `inserted`. Sets the phase before
+    /// reading `announcement` so the announcement reflects the new state.
+    private mutating func performHandoffInsertion(
+        _ pending: PendingDictation,
+        document: KeyboardDictationDocument,
+        now: Date
+    ) -> [KeyboardDictationEffect] {
+        let hasText = Self.hasContent(pending.text)
+        guard hasText || pending.pressEnter else {
+            phase = .nothingToInsert(.emptyTranscript, until: now + Self.nothingToInsertDisplayDuration)
+            return [announcement]
+        }
+
+        var effects: [KeyboardDictationEffect] = []
         if hasText {
             effects.append(.insert(TranscriptRouting.insertionText(
                 for: pending.text,
@@ -846,7 +910,8 @@ struct KeyboardDictationMachine: Equatable {
         case .waitingForApp(let waitingSessionID, let since, _) where waitingSessionID == sessionID:
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
             return []
-        case .starting, .recording, .processing:
+        case .starting, .recording, .processing, .pendingInsert:
+            // A result is already held or capture is under way; don't adopt.
             return []
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
              .waitingForApp:
@@ -883,7 +948,7 @@ struct KeyboardDictationMachine: Equatable {
             }
             phase = .error(message: Self.stopTimedOutMessage, until: now + Self.errorDisplayDuration)
             return [.cancelCapture, announcement]
-        case .inserted, .nothingToInsert, .error:
+        case .inserted, .nothingToInsert, .error, .pendingInsert:
             expireMessage(now: now)
             return []
         case .waitingForApp(let sessionID, let since, let nextCheck):
