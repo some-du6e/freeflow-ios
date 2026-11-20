@@ -29,8 +29,13 @@ struct DictationConfiguration: Equatable {
         LanguageOptions.transcriptionLanguageName(forCode: transcriptionLanguageCode)
     }
 
+    /// The retired default fallback model that macOS resets
+    /// (`AppState.deprecatedDefaultPostProcessingFallbackModel`).
+    private static let deprecatedPostProcessingFallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+
     /// Returns nil when there is no usable API key, which callers present as
-    /// "setup needed". Reads only the keys in `FreeFlowSettingKey`.
+    /// "setup needed". Reads only the keys in `FreeFlowSettingKey`, after
+    /// applying `migrateLegacyModelSettings(in:)` like macOS does at launch.
     static func resolve(
         defaults: UserDefaults,
         apiKey: String?,
@@ -39,10 +44,15 @@ struct DictationConfiguration: Equatable {
         let key = trimmed(apiKey)
         guard !key.isEmpty else { return nil }
 
-        let storedBaseURL = trimmed(defaults.string(forKey: FreeFlowSettingKey.apiBaseURL))
-        let baseURL = storedBaseURL.isEmpty ? FreeFlowSettingDefaults.apiBaseURL : storedBaseURL
+        migrateLegacyModelSettings(in: defaults)
+        let baseURL = resolvedBaseURL(in: defaults)
         let storedTranscriptionURL = trimmed(defaults.string(forKey: FreeFlowSettingKey.transcriptionAPIURL))
         let storedTranscriptionKey = trimmed(transcriptionAPIKey)
+        let fallbackModel = string(
+            defaults,
+            FreeFlowSettingKey.postProcessingFallbackModel,
+            FreeFlowSettingDefaults.postProcessingFallbackModel
+        )
 
         return DictationConfiguration(
             apiKey: key,
@@ -50,9 +60,15 @@ struct DictationConfiguration: Equatable {
             transcriptionAPIKey: storedTranscriptionKey.isEmpty ? key : storedTranscriptionKey,
             transcriptionBaseURL: storedTranscriptionURL.isEmpty ? baseURL : storedTranscriptionURL,
             transcriptionModel: string(defaults, FreeFlowSettingKey.transcriptionModel, FreeFlowSettingDefaults.transcriptionModel),
-            transcriptionLanguageCode: trimmed(defaults.string(forKey: FreeFlowSettingKey.transcriptionLanguage)),
+            transcriptionLanguageCode: normalizedTranscriptionLanguageCode(
+                defaults.string(forKey: FreeFlowSettingKey.transcriptionLanguage)
+            ),
             postProcessingModel: string(defaults, FreeFlowSettingKey.postProcessingModel, FreeFlowSettingDefaults.postProcessingModel),
-            postProcessingFallbackModel: string(defaults, FreeFlowSettingKey.postProcessingFallbackModel, FreeFlowSettingDefaults.postProcessingFallbackModel),
+            // The migration above already rewrote the stored value; this also
+            // covers a process whose App Group is read-only.
+            postProcessingFallbackModel: fallbackModel == deprecatedPostProcessingFallbackModel
+                ? FreeFlowSettingDefaults.postProcessingFallbackModel
+                : fallbackModel,
             customSystemPrompt: defaults.string(forKey: FreeFlowSettingKey.customSystemPrompt) ?? "",
             customVocabulary: defaults.string(forKey: FreeFlowSettingKey.customVocabulary) ?? "",
             outputLanguage: trimmed(defaults.string(forKey: FreeFlowSettingKey.outputLanguage)),
@@ -61,6 +77,42 @@ struct DictationConfiguration: Equatable {
             pressEnterVoiceCommandEnabled: bool(defaults, FreeFlowSettingKey.pressEnterVoiceCommandEnabled, FreeFlowSettingDefaults.pressEnterVoiceCommandEnabled),
             voiceMacros: VoiceMacroCodec.decode(defaults.data(forKey: FreeFlowSettingKey.voiceMacros))
         )
+    }
+
+    /// The macOS launch-time model migrations, rewriting stored values:
+    /// - `ModelConfiguration.migrateGroqSelection` moves retired Qwen 3.6 IDs
+    ///   to Qwen 3.8, only on Groq's own endpoint (Sources/AppState.swift:697-699).
+    /// - The retired llama-4-scout default fallback resets to the current
+    ///   default (Sources/AppState.swift:981-993).
+    /// iOS has no context model, so only the two cleanup models migrate.
+    /// Writes only when a value changes. `resolve` calls this; the app may
+    /// also call it at launch so Settings shows migrated values.
+    static func migrateLegacyModelSettings(in defaults: UserDefaults) {
+        let baseURL = resolvedBaseURL(in: defaults)
+        for key in [FreeFlowSettingKey.postProcessingModel, FreeFlowSettingKey.postProcessingFallbackModel] {
+            ModelConfiguration.migrateGroqSelection(key: key, baseURL: baseURL, defaults: defaults)
+        }
+        if trimmed(defaults.string(forKey: FreeFlowSettingKey.postProcessingFallbackModel)) == deprecatedPostProcessingFallbackModel {
+            defaults.set(
+                FreeFlowSettingDefaults.postProcessingFallbackModel,
+                forKey: FreeFlowSettingKey.postProcessingFallbackModel
+            )
+        }
+    }
+
+    /// The macOS `AppState.normalizeTranscriptionLanguage`: a known code,
+    /// lowercased, or "" (auto-detect) for anything else.
+    static func normalizedTranscriptionLanguageCode(_ value: String?) -> String {
+        let normalized = trimmed(value).lowercased()
+        guard LanguageOptions.transcriptionLanguages.contains(where: { $0.code == normalized }) else {
+            return ""
+        }
+        return normalized
+    }
+
+    private static func resolvedBaseURL(in defaults: UserDefaults) -> String {
+        let storedBaseURL = trimmed(defaults.string(forKey: FreeFlowSettingKey.apiBaseURL))
+        return storedBaseURL.isEmpty ? FreeFlowSettingDefaults.apiBaseURL : storedBaseURL
     }
 
     private static func trimmed(_ value: String?) -> String {

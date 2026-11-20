@@ -2,10 +2,6 @@ import Foundation
 
 /// Shared settings: non-secret values in the App Group's UserDefaults under
 /// `FreeFlowSettingKey` names, API keys in `SharedKeychain`.
-///
-/// CONTRACT STUB: owned by the shared-pipeline agent. The defaults-backed
-/// accessors below are real; the keychain-backed parts are filled in with
-/// `SharedKeychain`. Keep the signatures.
 final class SettingsStore {
     static let shared = SettingsStore(
         defaults: UserDefaults(suiteName: FreeFlowIdentifiers.appGroupIdentifier) ?? .standard,

@@ -58,6 +58,40 @@ struct HistoryEntry: Codable, Equatable, Identifiable {
     }
 }
 
+extension HistoryEntry {
+    /// An entry for a finished dictation, recording its raw and final text
+    /// and route. `status` defaults to `Status.forInsertion(of:)`; pass
+    /// `.handedOff` or `.notInserted` when the text wasn't inserted.
+    init(
+        result: DictationResult,
+        source: Source,
+        status: Status? = nil,
+        createdAt: Date,
+        durationSeconds: Double
+    ) {
+        self.init(
+            createdAt: createdAt,
+            source: source,
+            status: status ?? .forInsertion(of: result),
+            rawTranscript: result.rawTranscript,
+            text: result.text,
+            route: result.route,
+            durationSeconds: durationSeconds
+        )
+    }
+}
+
+extension HistoryEntry.Status {
+    /// What an inserted result means: nothing to insert, the raw-transcript
+    /// fallback, or a normal insertion.
+    static func forInsertion(of result: DictationResult) -> HistoryEntry.Status {
+        if result.text.isEmpty {
+            return .nothingToInsert
+        }
+        return result.usedRawFallback ? .rawFallback : .inserted
+    }
+}
+
 /// Pure (de)serialization and trimming for the history file. The macOS app
 /// keeps the newest 20 runs; so does iOS.
 enum HistoryLog {

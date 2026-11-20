@@ -54,10 +54,11 @@ enum LanguageOptions {
     ]
 
     /// The English name the cleanup prompt expects for a transcription
-    /// language code, or "" for auto-detect and unknown codes.
+    /// language code, or "" for auto-detect and unknown codes. Codes are
+    /// matched case-insensitively, like macOS `dictationLanguageName(for:)`.
     static func transcriptionLanguageName(forCode code: String) -> String {
-        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        return transcriptionLanguages.first(where: { $0.code == trimmed })?.name ?? ""
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return "" }
+        return transcriptionLanguages.first(where: { $0.code == normalized })?.name ?? ""
     }
 }
