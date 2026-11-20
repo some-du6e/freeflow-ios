@@ -104,13 +104,22 @@ enum CaptureMessage: Equatable {
     enum FailureKind: Equatable {
         /// WebKit refused the microphone, usually because the containing app lacks permission.
         case permissionDenied
+        /// The microphone or audio device is taken or failed to start, e.g. during a phone call.
+        /// A later attempt may work.
+        case busy
         /// The platform can't capture here, e.g. Lockdown Mode or an unsupported audio rate.
         case unsupported
     }
 
-    /// Classifies a `failed` message's error name.
+    /// Classifies a `failed` message's error name. WebKit reports a hardware failure as
+    /// NotReadableError and other capture failures as AbortError; AudioContext.resume()
+    /// rejects with InvalidStateError when it can't start the audio device.
     static func failureKind(forName name: String) -> FailureKind {
-        name == "NotAllowedError" ? .permissionDenied : .unsupported
+        switch name {
+        case "NotAllowedError": return .permissionDenied
+        case "NotReadableError", "AbortError", "InvalidStateError": return .busy
+        default: return .unsupported
+        }
     }
 
     // MARK: Field parsing

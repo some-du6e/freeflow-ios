@@ -53,7 +53,7 @@ final class CaptureTests: XCTestCase {
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
 
-        harness.capture.start()
+        harness.start()
         XCTAssertEqual(harness.capture.state, .starting)
         try await harness.waitForStart(timeout: 10)
         XCTAssertEqual(harness.capture.state, .capturing)
@@ -102,13 +102,13 @@ final class CaptureTests: XCTestCase {
         // The first capture on a cold CI simulator also launches WebKit's GPU process.
         harness.capture.startTimeoutInterval = 20
         let requestedAt = Date()
-        harness.capture.start()
+        harness.start()
         try await harness.waitUntil("audible audio or a failure", timeout: 25) {
-            harness.events.contains(.started) || !harness.terminalEvents.isEmpty
+            harness.sessionEvents.contains(.started) || harness.sessionEvents.contains(where: \.isTerminal)
         }
         let startStatus = try await harness.pageStatus()
         harness.record("page status after start", startStatus)
-        if let failure = harness.terminalEvents.first {
+        if let failure = harness.sessionEvents.first(where: \.isTerminal) {
             try Self.explainMicrophoneFailure(failure, status: startStatus)
         }
         let startLatency = Date().timeIntervalSince(requestedAt)
@@ -167,7 +167,7 @@ final class CaptureTests: XCTestCase {
         let harness = try await CaptureHarness.make(synthetic: true)
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         try await Task.sleep(nanoseconds: 300_000_000)
         harness.capture.cancel()
@@ -179,7 +179,7 @@ final class CaptureTests: XCTestCase {
         harness.record("idle page probe", ["answer": answer ?? -1, "seconds": Date().timeIntervalSince(probedAt)])
         XCTAssertEqual(answer, 42)
 
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
@@ -192,7 +192,7 @@ final class CaptureTests: XCTestCase {
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
 
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         let fileURL = try XCTUnwrap(harness.capture.recordingFileURL)
         try await Task.sleep(nanoseconds: 300_000_000)
@@ -204,7 +204,7 @@ final class CaptureTests: XCTestCase {
         XCTAssertEqual(harness.capture.state, .ready)
 
         // The next capture is unaffected, and the cancelled one never reports.
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
@@ -221,7 +221,7 @@ final class CaptureTests: XCTestCase {
         try await harness.attachAndWaitForReady()
         try await harness.run("navigator.mediaDevices.getUserMedia = () => new Promise(() => {})")
 
-        harness.capture.start()
+        harness.start()
         let fileURL = try XCTUnwrap(harness.capture.recordingFileURL)
         harness.capture.stop()
         let event = try await harness.waitForTerminalEvent(timeout: 5)
@@ -239,7 +239,7 @@ final class CaptureTests: XCTestCase {
         try await harness.run("navigator.mediaDevices.getUserMedia = () => new Promise(() => {})")
 
         let startedAt = Date()
-        harness.capture.start()
+        harness.start()
         let fileURL = try XCTUnwrap(harness.capture.recordingFileURL)
         let event = try await harness.waitForTerminalEvent(timeout: 10)
         let elapsed = Date().timeIntervalSince(startedAt)
@@ -259,7 +259,7 @@ final class CaptureTests: XCTestCase {
         try await harness.attachAndWaitForReady()
         try await harness.run("navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('Denied', 'NotAllowedError'))")
 
-        harness.capture.start()
+        harness.start()
         let event = try await harness.waitForTerminalEvent(timeout: 10)
 
         XCTAssertEqual(event, .failed(.permissionDenied))
@@ -273,7 +273,7 @@ final class CaptureTests: XCTestCase {
         try await harness.attachAndWaitForReady()
         try await harness.run("Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true })")
 
-        harness.capture.start()
+        harness.start()
         let event = try await harness.waitForTerminalEvent(timeout: 10)
 
         XCTAssertEqual(event, .failed(.unsupported("MediaDevicesUnavailable")))
@@ -284,7 +284,7 @@ final class CaptureTests: XCTestCase {
         let harness = try await CaptureHarness.make(synthetic: true)
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         let fileURL = try XCTUnwrap(harness.capture.recordingFileURL)
 
@@ -301,7 +301,7 @@ final class CaptureTests: XCTestCase {
         let harness = try await CaptureHarness.make(synthetic: true)
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         try await Task.sleep(nanoseconds: 500_000_000)
         try await harness.run("ffCapture.stop = function () {}")
@@ -320,7 +320,7 @@ final class CaptureTests: XCTestCase {
         let harness = try await CaptureHarness.make(synthetic: true)
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         let fileURL = try XCTUnwrap(harness.capture.recordingFileURL)
 
@@ -342,7 +342,7 @@ final class CaptureTests: XCTestCase {
         }
         XCTAssertEqual(harness.capture.state, .ready)
 
-        harness.capture.start()
+        harness.start()
         try await harness.waitForStart(timeout: 10)
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
@@ -355,7 +355,8 @@ final class CaptureTests: XCTestCase {
         defer { harness.tearDown() }
         try await harness.attachAndWaitForReady()
 
-        try await harness.run("window.__marker = 'kept'; location.href = 'https://example.invalid/elsewhere'")
+        // about:blank would commit at once if the lock let it through.
+        try await harness.run("window.__marker = 'kept'; location.href = 'about:blank'")
         try await Task.sleep(nanoseconds: 1_000_000_000)
 
         let marker = try await harness.evaluate("window.__marker") as? String
@@ -390,7 +391,7 @@ final class CaptureTests: XCTestCase {
         let harness = try await CaptureHarness.make()
         defer { harness.tearDown() }
 
-        harness.capture.start()
+        harness.start()
 
         XCTAssertEqual(harness.events, [.failed(.pageUnavailable)])
         XCTAssertEqual(harness.capture.state, .detached)
@@ -404,7 +405,7 @@ final class CaptureTests: XCTestCase {
         XCTAssertEqual(harness.capture.state, .loading)
 
         harness.capture.startTimeoutInterval = 30 // a cold page load on CI
-        harness.capture.start()
+        harness.start()
         XCTAssertEqual(harness.capture.state, .starting)
         try await harness.waitForStart(timeout: 35)
         harness.capture.stop()
@@ -412,6 +413,32 @@ final class CaptureTests: XCTestCase {
 
         XCTAssertFalse(harness.events.contains(.ready), "A start that waited for the page reports no ready")
         XCTAssertEqual(harness.capture.state, .ready)
+    }
+
+    /// A page whose WebContent process stops running script gets a fresh web view, and the
+    /// next capture works while the old process is still stuck.
+    @MainActor
+    func testStalledPageIsReplacedByAFreshWebView() async throws {
+        let harness = try await CaptureHarness.make(synthetic: true)
+        defer { harness.tearDown() }
+        try await harness.attachAndWaitForReady()
+        let stalled = harness.capture.webView
+        // Block the page's script thread for longer than the start watchdog.
+        try await harness.run("setTimeout(() => { const end = Date.now() + 6000; while (Date.now() < end) {} }, 0)")
+
+        harness.start()
+        let event = try await harness.waitForTerminalEvent(timeout: 10)
+        XCTAssertEqual(event, .failed(.pageUnavailable))
+        XCTAssertFalse(harness.capture.webView === stalled, "The stalled web view must be replaced")
+        XCTAssertNil(stalled.superview)
+        XCTAssertTrue(harness.capture.webView.window === harness.window)
+
+        try await harness.waitUntil("the fresh page to load", timeout: 30) { harness.capture.isReady }
+        harness.start()
+        try await harness.waitForStart(timeout: 10)
+        harness.capture.stop()
+        let audio = try await harness.waitForRecording(timeout: 10)
+        XCTAssertGreaterThanOrEqual(audio.frameCount, CaptureRecording.minimumFrameCount)
     }
 
     func testMicrophoneIsGrantedOnlyToTheCapturePagesMainFrame() {
@@ -425,12 +452,15 @@ final class CaptureTests: XCTestCase {
     }
 
     /// Turns a failed microphone start into a skip when the simulator can't run Web Audio,
-    /// and into a failure otherwise. Either way the page status goes in the message.
+    /// and into a failure otherwise. Either way the page status goes in the message. The
+    /// page's endedIn field survives the cancel that follows a start timeout.
     private static func explainMicrophoneFailure(_ event: CaptureHarness.Event, status: [String: Any]) throws {
-        let phase = status["phase"] as? String ?? "unknown"
+        let endedIn = status["endedIn"] as? String ?? ""
         let callbacks = status["callbacks"] as? Int ?? 0
         let summary = status.keys.sorted().map { "\($0)=\(status[$0] ?? "")" }.joined(separator: " ")
-        if event == .failed(.startTimedOut), phase == "context" || (phase == "running" && callbacks == 0) {
+        let neverRendered = endedIn == "context" || (endedIn == "running" && callbacks == 0)
+        let noAudio = event == .failed(.startTimedOut) || event == .failed(.interrupted("no-audio"))
+        if noAudio && neverRendered {
             throw XCTSkip("The simulator's AudioContext never rendered audio, so real capture can't run on this machine. Page status: \(summary)")
         }
         XCTFail("Microphone capture failed with \(event). Page status: \(summary)")
@@ -456,6 +486,13 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         case started
         case finished(CapturedAudio)
         case failed(WebAudioCaptureFailure)
+
+        var isTerminal: Bool {
+            switch self {
+            case .finished, .failed: return true
+            case .ready, .started: return false
+            }
+        }
     }
 
     let window: UIWindow
@@ -463,6 +500,7 @@ final class CaptureHarness: WebAudioCaptureDelegate {
     private(set) var events: [Event] = []
     private(set) var levels: [Float] = []
     private var recordings: [URL] = []
+    private var sessionStart = 0
 
     static func make(synthetic: Bool = false) async throws -> CaptureHarness {
         let scene = try await foregroundScene()
@@ -487,13 +525,15 @@ final class CaptureHarness: WebAudioCaptureDelegate {
 
     var hostView: UIView { window.rootViewController?.view ?? window }
 
-    var terminalEvents: [Event] {
-        events.filter {
-            switch $0 {
-            case .finished, .failed: return true
-            case .ready, .started: return false
-            }
-        }
+    var terminalEvents: [Event] { events.filter(\.isTerminal) }
+
+    /// Events since the last `start()`.
+    var sessionEvents: ArraySlice<Event> { events[sessionStart...] }
+
+    /// Starts a capture and marks where its events begin, so a synchronous failure counts too.
+    func start() {
+        sessionStart = events.count
+        capture.start()
     }
 
     func tearDown() {
@@ -548,67 +588,90 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         }
     }
 
-    func attachAndWaitForReady(timeout: TimeInterval = 30) async throws {
+    func attachAndWaitForReady(timeout: TimeInterval = 30, file: StaticString = #filePath, line: UInt = #line) async throws {
         capture.attach(to: hostView)
-        try await waitUntil("the capture page to load", timeout: timeout) { capture.isReady }
+        try await waitUntil("the capture page to load", timeout: timeout, file: file, line: line) { capture.isReady }
     }
 
     /// Waits for the capture started last to become audible, and stops waiting as soon as it
-    /// fails instead. Call it right after `start()`.
+    /// fails instead.
     func waitForStart(timeout: TimeInterval, file: StaticString = #filePath, line: UInt = #line) async throws {
-        let starts = events.filter { $0 == .started }.count
-        let terminals = terminalEvents.count
         try await waitUntil("audible audio", timeout: timeout, file: file, line: line) {
-            events.filter { $0 == .started }.count > starts || terminalEvents.count > terminals
+            sessionEvents.contains(.started) || sessionEvents.contains(where: \.isTerminal)
         }
-        guard events.filter({ $0 == .started }).count > starts else {
-            let status = (try? await pageStatus(timeout: 5)) ?? ["status": "no answer"]
-            record("page status after a failed start", status)
-            XCTFail("Capture failed to start: \(events). Page status: \(status)", file: file, line: line)
+        guard sessionEvents.contains(.started) else {
+            await recordDiagnostics("failed start")
+            XCTFail("Capture failed to start: \(Array(sessionEvents))", file: file, line: line)
             throw CaptureTestError.startFailed
         }
     }
 
-    /// The first finish or failure; for tests that run one capture.
-    func waitForTerminalEvent(timeout: TimeInterval) async throws -> Event {
-        try await waitUntil("a finish or a failure", timeout: timeout) { !terminalEvents.isEmpty }
-        return terminalEvents[0]
+    /// The finish or failure of the capture started last.
+    func waitForTerminalEvent(timeout: TimeInterval, file: StaticString = #filePath, line: UInt = #line) async throws -> Event {
+        try await waitUntil("a finish or a failure", timeout: timeout, file: file, line: line) {
+            sessionEvents.contains(where: \.isTerminal)
+        }
+        guard let event = sessionEvents.first(where: \.isTerminal) else { throw CaptureTestError.timedOut("a terminal event") }
+        return event
     }
 
-    func waitForRecording(timeout: TimeInterval) async throws -> CapturedAudio {
-        let count = terminalEvents.count
-        try await waitUntil("the recording", timeout: timeout) { terminalEvents.count > count }
-        let event = terminalEvents[terminalEvents.count - 1]
+    func waitForRecording(timeout: TimeInterval, file: StaticString = #filePath, line: UInt = #line) async throws -> CapturedAudio {
+        let event = try await waitForTerminalEvent(timeout: timeout, file: file, line: line)
         guard case .finished(let audio) = event else {
-            XCTFail("Expected a recording, got \(event)")
+            await recordDiagnostics("missing recording")
+            XCTFail("Expected a recording, got \(event)", file: file, line: line)
             throw CaptureTestError.badWAV
         }
         return audio
     }
 
-    func waitForPageSession(toEndWith reason: String, timeout: TimeInterval = 5) async throws {
+    func waitForPageSession(
+        toEndWith reason: String,
+        timeout: TimeInterval = 5,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while true {
-            let status = try await pageStatus()
+            let status = try await pageStatus(file: file, line: line)
             if status["phase"] as? String == "ended", status["reason"] as? String == reason { return }
             guard Date() < deadline else {
-                XCTFail("The page session did not end with \(reason): \(status)")
+                XCTFail("The page session did not end with \(reason): \(status)", file: file, line: line)
                 throw CaptureTestError.timedOut(reason)
             }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 
+    /// Records what a failed wait needs for triage: capture and page state, never audio.
+    func recordDiagnostics(_ name: String) async {
+        var values = (try? await pageStatus(timeout: 3, failOnTimeout: false)) ?? ["page": "no answer within 3 s"]
+        values["captureState"] = "\(capture.state)"
+        values["webViewLoading"] = capture.webView.isLoading
+        values["webViewInWindow"] = capture.webView.window != nil
+        values["sceneActivation"] = window.windowScene?.activationState.rawValue ?? -1
+        values["microphoneCaptureState"] = capture.webView.microphoneCaptureState.rawValue
+        record(name, values)
+    }
+
     // MARK: Page access
 
     /// evaluateJavaScript that gives up after `timeout`, so a page whose web process stopped
     /// running script fails the test instead of hanging the suite.
-    func evaluate(_ script: String, timeout: TimeInterval = 10) async throws -> Any? {
+    func evaluate(
+        _ script: String,
+        timeout: TimeInterval = 10,
+        failOnTimeout: Bool = true,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> Any? {
         let reply = beginEvaluation(script)
         let deadline = Date().addingTimeInterval(timeout)
         while !reply.isDone {
             guard Date() < deadline else {
-                XCTFail("The page did not answer within \(timeout) s: \(script.prefix(60))")
+                if failOnTimeout {
+                    XCTFail("The page did not answer within \(timeout) s: \(script.prefix(60))", file: file, line: line)
+                }
                 throw CaptureTestError.pageUnresponsive(String(script.prefix(60)))
             }
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -630,18 +693,29 @@ final class CaptureHarness: WebAudioCaptureDelegate {
     }
 
     /// Runs a statement in the page and ignores its value.
-    func run(_ statement: String) async throws {
-        _ = try await evaluate("\(statement); 0")
+    func run(_ statement: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        _ = try await evaluate("\(statement); 0", file: file, line: line)
     }
 
-    func evaluateJSON(_ script: String, timeout: TimeInterval = 10) async throws -> [String: Any] {
-        let json = try await evaluate(script, timeout: timeout) as? String ?? "{}"
+    func evaluateJSON(
+        _ script: String,
+        timeout: TimeInterval = 10,
+        failOnTimeout: Bool = true,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> [String: Any] {
+        let json = try await evaluate(script, timeout: timeout, failOnTimeout: failOnTimeout, file: file, line: line) as? String ?? "{}"
         return try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] ?? [:]
     }
 
     /// The page's `ffCapture.status()`: states and counts, never audio.
-    func pageStatus(timeout: TimeInterval = 10) async throws -> [String: Any] {
-        try await evaluateJSON("JSON.stringify(ffCapture.status())", timeout: timeout)
+    func pageStatus(
+        timeout: TimeInterval = 10,
+        failOnTimeout: Bool = true,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> [String: Any] {
+        try await evaluateJSON("JSON.stringify(ffCapture.status())", timeout: timeout, failOnTimeout: failOnTimeout, file: file, line: line)
     }
 
     /// Prints diagnostics and keeps them in the result bundle.

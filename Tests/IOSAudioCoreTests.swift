@@ -31,6 +31,7 @@ enum IOSAudioCoreTests {
         testJavaScriptResamplerResponse()
         testJavaScriptCaptureSessionEndToEnd()
         testJavaScriptDeadManSwitch()
+        testJavaScriptInputStallReleasesTheMicrophone()
         testJavaScriptStopTimeoutCancelAndStaleSessions()
         testJavaScriptFailures()
         testJavaScriptSyntheticSource()
@@ -149,7 +150,10 @@ enum IOSAudioCoreTests {
 
     private static func testFailureNamesAndTokens() {
         TestSupport.expectEqual(CaptureMessage.failureKind(forName: "NotAllowedError"), .permissionDenied)
-        for name in ["NotFoundError", "NotReadableError", "SecurityError", "MediaDevicesUnavailable", "UnsupportedRateError", "unknown"] {
+        for name in ["NotReadableError", "AbortError", "InvalidStateError"] {
+            TestSupport.expectEqual(CaptureMessage.failureKind(forName: name), .busy)
+        }
+        for name in ["NotFoundError", "SecurityError", "MediaDevicesUnavailable", "UnsupportedRateError", "unknown"] {
             TestSupport.expectEqual(CaptureMessage.failureKind(forName: name), .unsupported)
         }
 
@@ -701,6 +705,35 @@ enum IOSAudioCoreTests {
         TestSupport.expectEqual(rejecting.number("__media.trackStops"), 1)
         page.expectNoExceptions()
         rejecting.expectNoExceptions()
+    }
+
+    /// With nothing waiting for an ack, a silent input is a stall, not an unresponsive native
+    /// side, and it also ends the session. Acked audio keeps a session running indefinitely.
+    private static func testJavaScriptInputStallReleasesTheMicrophone() {
+        let stalled = JSCapturePage()
+        stalled.evaluate("ffCapture.start({sid: 1}); 0")
+        stalled.evaluate("__advance(2400); 0")
+        TestSupport.expectEqual(stalled.string("ffCapture.status().phase"), "running")
+        stalled.evaluate("__advance(700); 0")
+        TestSupport.expectEqual(stalled.native.messages.last, .ended(session: 1, reason: "no-audio", frames: 0))
+        TestSupport.expectEqual(stalled.string("ffCapture.status().endedIn"), "running")
+        TestSupport.expectEqual(stalled.number("__media.trackStops"), 1)
+
+        let flowing = JSCapturePage()
+        flowing.evaluate("ffCapture.start({sid: 2}); 0")
+        for _ in 0..<100 {
+            flowing.evaluate("__advance(40); __feed(__tone(48000, 440, 2048 / 48000, 0.1)); 0")
+        }
+        TestSupport.expectEqual(flowing.string("ffCapture.status().phase"), "running")
+        TestSupport.expect(!flowing.native.messages.contains { if case .ended = $0 { return true }; return false }, "Acked audio must keep running")
+
+        let pending = JSCapturePage()
+        pending.evaluate("__media.hang = true; ffCapture.start({sid: 3}); 0")
+        pending.evaluate("ffCapture.cancel(3); 0")
+        TestSupport.expectEqual(pending.string("ffCapture.status().endedIn"), "media")
+        stalled.expectNoExceptions()
+        flowing.expectNoExceptions()
+        pending.expectNoExceptions()
     }
 
     private static func testJavaScriptStopTimeoutCancelAndStaleSessions() {

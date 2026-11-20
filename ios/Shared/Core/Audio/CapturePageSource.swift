@@ -149,12 +149,13 @@ function ffSyntheticSource(onBlock) {
 //
 // Native calls ffCapture.start({sid, synthetic, echoCancellation}), stop(sid) and cancel(sid).
 // The page posts {t:'ready'}, then per session {t:'started'}, one {t:'pcm'} per callback,
-// and finally {t:'ended'} or {t:'failed'}. Native acks every pcm message; when acks stop for
-// 2.5 s the page releases the microphone by itself.
+// and finally {t:'ended'} or {t:'failed'}. Native acks every pcm message. The page releases
+// the microphone by itself when posted chunks go unacked for 2.5 s (native-unresponsive) or
+// when no audio callback arrives for 2.5 s (no-audio).
 (() => {
   const SP_FRAMES = 2048;              // about 42.7 ms per ScriptProcessor callback at 48 kHz
   const METER_SECONDS = 1024 / 48000;  // about 21.3 ms RMS blocks for the waveform
-  const ACK_TIMEOUT_MS = 2500;         // the dead-man switch
+  const ACK_TIMEOUT_MS = 2500;         // the dead-man switch, also the longest input stall
   const ACK_CHECK_MS = 500;
   const STOP_GRACE_MS = 250;           // longest wait for one more callback after stop()
   const native = window.webkit.messageHandlers.ffCapture;
@@ -178,13 +179,13 @@ function ffSyntheticSource(onBlock) {
   }
   function end(s, reason) {
     if (S !== s) return;
-    S = null; s.phase = 'ended'; s.reason = reason;
+    S = null; s.endedIn = s.phase; s.phase = 'ended'; s.reason = reason;
     teardown(s);
     post({ t: 'ended', sid: s.sid, reason, frames: s.frames }).catch(() => {});
   }
   function fail(s, name) {
     if (S !== s) return;
-    S = null; s.phase = 'failed'; s.reason = name;
+    S = null; s.endedIn = s.phase; s.phase = 'failed'; s.reason = name;
     teardown(s);
     post({ t: 'failed', sid: s.sid, name }).catch(() => {});
   }
@@ -206,6 +207,7 @@ function ffSyntheticSource(onBlock) {
   function onAudio(s, x) {
     if (S !== s) return;
     s.callbacks++;
+    s.lastAudio = performance.now();
     const levels = meter(s, x);
     const y = s.rs.process(x);
     if (s.stopping) finish(s, y, levels); else send(s, y, levels, false);
@@ -223,9 +225,12 @@ function ffSyntheticSource(onBlock) {
     s.meterFrames = Math.max(1, Math.round(rate * METER_SECONDS));
     s.rate = rate; s.captureRate = captureRate;
     s.phase = 'running';
-    s.lastAck = performance.now();
+    s.lastAck = s.lastAudio = performance.now();
     s.watchdog = setInterval(() => {
-      if (S === s && performance.now() - s.lastAck > ACK_TIMEOUT_MS) end(s, 'native-unresponsive');
+      if (S !== s) return;
+      const now = performance.now();
+      if (s.seq > s.acked && now - s.lastAck > ACK_TIMEOUT_MS) end(s, 'native-unresponsive');
+      else if (now - s.lastAudio > ACK_TIMEOUT_MS) end(s, 'no-audio');
     }, ACK_CHECK_MS);
     post({ t: 'started', sid: s.sid, rate, captureRate, synthetic: s.synthetic }).catch(() => {});
   }
@@ -233,7 +238,7 @@ function ffSyntheticSource(onBlock) {
     const o = options || {};
     if (S) end(S, 'restarted');
     const s = {
-      sid: Number(o.sid) || 0, synthetic: !!o.synthetic, phase: 'starting', reason: '',
+      sid: Number(o.sid) || 0, synthetic: !!o.synthetic, phase: 'starting', endedIn: '', reason: '',
       seq: 0, acked: 0, frames: 0, callbacks: 0, sumSq: 0, count: 0, stopping: false,
       rate: 0, captureRate: 0, lastAck: performance.now(),
     };
@@ -295,7 +300,7 @@ function ffSyntheticSource(onBlock) {
     const s = last;
     if (!s) return { phase: 'idle' };
     return {
-      sid: s.sid, phase: s.phase, reason: s.reason, synthetic: s.synthetic,
+      sid: s.sid, phase: s.phase, endedIn: s.endedIn, reason: s.reason, synthetic: s.synthetic,
       frames: s.frames, seq: s.seq, acked: s.acked, callbacks: s.callbacks,
       rate: s.rate, captureRate: s.captureRate,
       ctxState: s.ctx ? s.ctx.state : '', ctxTime: s.ctx ? s.ctx.currentTime : 0,

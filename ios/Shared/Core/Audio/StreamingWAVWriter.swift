@@ -22,11 +22,18 @@ final class StreamingWAVWriter {
         guard FileManager.default.createFile(atPath: url.path, contents: header) else {
             throw Failure.cannotCreateFile
         }
-        let handle = try FileHandle(forWritingTo: url)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: url)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
         do {
             _ = try handle.seekToEnd()
         } catch {
             try? handle.close()
+            try? FileManager.default.removeItem(at: url)
             throw error
         }
         self.handle = handle

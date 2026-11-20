@@ -53,14 +53,19 @@ protocol WebAudioCaptureDelegate: AnyObject {
 /// the app must hold microphone permission. The web view is 2×2 pt at alpha 0.02 and must
 /// stay in the window while capturing: WebKit mutes pages that are hidden or detached.
 ///
-/// Each `start()` gets exactly one `didFinish` or `didFail`, unless `cancel()` or `detach()`
-/// discards it first. `start()` reports `.pageUnavailable` and `.fileError` synchronously,
-/// before it returns; every other result arrives later. Keep one instance per process:
-/// attach it in `viewDidAppear` and detach it in `viewDidDisappear`. The page stays loaded
-/// in between, because reloading it costs the next dictation a slow start.
+/// A `start()` made while no capture is running gets exactly one `didFinish` or `didFail`,
+/// unless `cancel()` or `detach()` discards it first. A `start()` during a capture is ignored,
+/// with no callback. A failure can arrive synchronously, before `start()` returns
+/// (`.pageUnavailable` when the web view isn't in a window, `.fileError` when the file can't
+/// be created), or later; both of those can also arrive later.
+///
+/// Keep one instance per process: attach it in `viewDidAppear` and detach it in
+/// `viewDidDisappear`. The page stays loaded in between, because reloading it costs the next
+/// dictation a slow start. If the page stops running script, the next failed start replaces
+/// the web view and its WebContent process.
 ///
 /// The caller owns `CapturedAudio.fileURL` and should delete it after use. Logs carry only
-/// states and counts.
+/// states, ids, counts and durations.
 @MainActor
 final class WebAudioCapture: NSObject {
     enum State: Equatable {
@@ -90,6 +95,10 @@ final class WebAudioCapture: NSObject {
     static let maximumFrameCount = Int(maximumDuration) * CaptureRecording.sampleRate
     /// Leftover recordings older than this are deleted when the capture attaches.
     static let staleRecordingAge: TimeInterval = 15 * 60
+    /// A page that hasn't reported ready by then gets a fresh web view.
+    static let pageLoadTimeout: TimeInterval = 10
+    /// Fresh web views tried for loads that time out, before waiting for the next attach.
+    static let maximumPageReplacements = 2
 
     weak var delegate: WebAudioCaptureDelegate?
     private(set) var state: State = .detached
@@ -111,16 +120,22 @@ final class WebAudioCapture: NSObject {
     /// The page reported by the latest session that started its audio graph.
     private(set) var lastStartInfo: StartInfo?
 
-    let webView: WKWebView
+    /// The current web view. It changes only when a stuck page is replaced.
+    private(set) var webView: WKWebView
     private let bridge: CaptureBridge
+    private weak var hostView: UIView?
     private var isAttached = false
     private var isPageLoaded = false
     private var isPageLoading = false
-    private var expectsPageNavigation = false
+    /// Loads this object started whose navigation the policy check hasn't seen yet.
+    private var allowedPageLoads = 0
+    private var pageLoadWatchdog: Task<Void, Never>?
+    private var timedOutPageLoads = 0
     private var nextSessionID = 1
     private var session: Session?
+    private var lastStaleChunkSession: Int?
 
-    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FreeFlow", category: "WebAudioCapture")
+    fileprivate static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FreeFlow", category: "WebAudioCapture")
 
     #if DEBUG
     private static let includesSyntheticSource = true
@@ -130,47 +145,26 @@ final class WebAudioCapture: NSObject {
 
     override init() {
         let bridge = CaptureBridge()
-        let configuration = WKWebViewConfiguration()
-        configuration.allowsInlineMediaPlayback = true
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.userContentController.addScriptMessageHandler(
-            bridge,
-            contentWorld: .page,
-            name: CapturePageSource.messageHandlerName
-        )
-
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 2, height: 2), configuration: configuration)
-        webView.alpha = 0.02
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.isUserInteractionEnabled = false
-        webView.isAccessibilityElement = false
-        webView.accessibilityElementsHidden = true
-        #if DEBUG
-        webView.isInspectable = true
-        #endif
-
         self.bridge = bridge
-        self.webView = webView
+        webView = WebAudioCapture.makeWebView(bridge: bridge)
         recordingsDirectory = FileManager.default.temporaryDirectory
             .appending(path: "FreeFlowCapture", directoryHint: .isDirectory)
         super.init()
         bridge.owner = self
-        webView.uiDelegate = bridge
-        webView.navigationDelegate = bridge
     }
 
     /// Adds the hidden web view to `view` (it must stay in the window while
     /// capturing) and preloads the page. Safe to call repeatedly.
     func attach(to view: UIView) {
         let previous = state
+        hostView = view
         if webView.superview !== view {
             view.addSubview(webView)
         }
         view.sendSubviewToBack(webView)
         if !isAttached {
             isAttached = true
+            timedOutPageLoads = 0
             purgeStaleRecordings()
         }
         if !isPageLoaded && !isPageLoading {
@@ -188,6 +182,7 @@ final class WebAudioCapture: NSObject {
             webView.setMicrophoneCaptureState(.none, completionHandler: nil)
         }
         webView.removeFromSuperview()
+        hostView = nil
         isAttached = false
         updateState(from: previous)
     }
@@ -287,15 +282,15 @@ final class WebAudioCapture: NSObject {
             pageDidLoad(version: version)
             return true
         case .started(let id, let contextRate, let captureRate, let isSynthetic):
-            guard let session, session.id == id else { return false }
+            guard let session, session.id == id else { return rejectStale("started", session: id) }
             lastStartInfo = StartInfo(session: id, contextRate: contextRate, captureRate: captureRate, isSynthetic: isSynthetic)
             Self.log.info("Capture session \(id, privacy: .public) audio graph started: context \(contextRate, privacy: .public) Hz, capture \(captureRate, privacy: .public) Hz, synthetic \(isSynthetic, privacy: .public)")
             return true
         case .pcm(let chunk):
-            guard let session, session.id == chunk.session else { return false }
+            guard let session, session.id == chunk.session else { return rejectStale("pcm", session: chunk.session) }
             return receive(chunk, in: session)
         case .ended(let id, let reason, let frames):
-            guard let session, session.id == id else { return false }
+            guard let session, session.id == id else { return rejectStale("ended", session: id) }
             Self.log.info("Capture session \(id, privacy: .public) ended in the page: \(reason, privacy: .public), \(frames, privacy: .public) frames sent")
             if session.phase == .stopping {
                 finish(session)
@@ -304,7 +299,7 @@ final class WebAudioCapture: NSObject {
             }
             return true
         case .failed(let id, let name):
-            guard let session, session.id == id else { return false }
+            guard let session, session.id == id else { return rejectStale("failed", session: id) }
             let failure: WebAudioCaptureFailure = CaptureMessage.failureKind(forName: name) == .permissionDenied
                 ? .permissionDenied
                 : .unsupported(name)
@@ -316,24 +311,96 @@ final class WebAudioCapture: NSObject {
     /// Ends any session and reloads the page, as after WebKit's content process exits.
     func webContentProcessDidTerminate() {
         Self.log.error("Capture web content process terminated")
-        isPageLoaded = false
-        isPageLoading = false
-        if let session {
-            fail(session, .pageUnavailable, cancellingPage: false)
-        }
+        let session = self.session
+        // Reload before reporting, so a retry from didFail waits for the new page.
         reloadPage()
+        if let session {
+            endForLostPage(session)
+        }
     }
 
     // MARK: Page
 
+    private static func makeWebView(bridge: CaptureBridge) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        // A data store of its own also gives each web view its own WebContent process, which
+        // is what lets replaceWebView() get away from a stuck one.
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addScriptMessageHandler(
+            bridge,
+            contentWorld: .page,
+            name: CapturePageSource.messageHandlerName
+        )
+
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 2, height: 2), configuration: configuration)
+        webView.alpha = 0.02
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.isUserInteractionEnabled = false
+        webView.isAccessibilityElement = false
+        webView.accessibilityElementsHidden = true
+        #if DEBUG
+        webView.isInspectable = true
+        #endif
+        webView.uiDelegate = bridge
+        webView.navigationDelegate = bridge
+        return webView
+    }
+
     private func loadPage() {
         isPageLoaded = false
         isPageLoading = true
-        expectsPageNavigation = true
+        allowedPageLoads += 1
+        pageLoadWatchdog?.cancel()
+        pageLoadWatchdog = after(Self.pageLoadTimeout) { [weak self] in
+            self?.pageLoadTimedOut()
+        }
         webView.loadHTMLString(
             CapturePageSource.html(includeSyntheticSource: Self.includesSyntheticSource),
             baseURL: CapturePageSource.baseURL
         )
+    }
+
+    private func reloadPage() {
+        let previous = state
+        isPageLoaded = false
+        isPageLoading = false
+        if isAttached {
+            loadPage()
+        }
+        updateState(from: previous)
+    }
+
+    /// Swaps in a new web view, and with it a new WebContent process, for a page that stopped
+    /// running script: reloading in place would queue behind the stuck process. The old view
+    /// keeps the bridge as its delegate, which rejects its messages and denies its capture
+    /// requests, and it is released once it leaves the window.
+    private func replaceWebView() {
+        let old = webView
+        old.stopLoading()
+        old.setMicrophoneCaptureState(.none, completionHandler: nil)
+        old.removeFromSuperview()
+        webView = WebAudioCapture.makeWebView(bridge: bridge)
+        if isAttached, let hostView {
+            hostView.addSubview(webView)
+            hostView.sendSubviewToBack(webView)
+        }
+        Self.log.info("Capture web view replaced")
+        reloadPage()
+    }
+
+    private func pageLoadTimedOut() {
+        guard isPageLoading, !isPageLoaded else { return }
+        timedOutPageLoads += 1
+        Self.log.error("Capture page did not load within \(Self.pageLoadTimeout, privacy: .public) s, attempt \(self.timedOutPageLoads, privacy: .public)")
+        if isAttached && timedOutPageLoads <= Self.maximumPageReplacements {
+            replaceWebView()
+        } else {
+            // The next attach() or start() loads again.
+            isPageLoading = false
+        }
     }
 
     private func pageDidLoad(version: Int) {
@@ -341,22 +408,31 @@ final class WebAudioCapture: NSObject {
         let reloadedUnderSession = isPageLoaded
         isPageLoaded = true
         isPageLoading = false
+        allowedPageLoads = 0
+        timedOutPageLoads = 0
+        pageLoadWatchdog?.cancel()
+        pageLoadWatchdog = nil
         if version != CapturePageSource.pageVersion {
             Self.log.error("Capture page version \(version, privacy: .public) differs from \(CapturePageSource.pageVersion, privacy: .public)")
         }
         if let session {
             if session.hasStartedPage || reloadedUnderSession {
-                fail(session, .pageUnavailable, cancellingPage: false)
-            } else {
+                endForLostPage(session)
+            } else if session.phase == .starting {
                 startPage(session)
             }
+            // A session stopped before the page loaded finishes on its own deadline.
         }
         updateState(from: previous)
     }
 
-    fileprivate func pageLoadFailed() {
-        Self.log.error("Capture page failed to load")
+    fileprivate func pageLoadFailed(_ error: Error) {
+        let error = error as NSError
+        guard isPageLoading, !(error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled) else { return }
+        Self.log.error("Capture page failed to load: \(error.domain, privacy: .public) \(error.code, privacy: .public)")
         isPageLoading = false
+        pageLoadWatchdog?.cancel()
+        pageLoadWatchdog = nil
     }
 
     fileprivate func receive(_ message: WKScriptMessage) -> Bool {
@@ -369,30 +445,33 @@ final class WebAudioCapture: NSObject {
         return handle(parsed)
     }
 
-    /// Navigation is locked to the page load this object starts.
+    /// Navigation is locked to the page loads this object starts.
     fileprivate func shouldAllowNavigation(_ action: WKNavigationAction) -> Bool {
         let url = action.request.url
-        guard expectsPageNavigation,
+        guard allowedPageLoads > 0,
               action.targetFrame?.isMainFrame == true,
               url?.scheme == "https",
               url?.host == CapturePageSource.host else {
             Self.log.error("Capture page navigation blocked")
             return false
         }
-        expectsPageNavigation = false
+        allowedPageLoads -= 1
         return true
     }
 
     private func startPage(_ session: Session) {
         session.hasStartedPage = true
-        let script = "ffCapture.start({sid: \(session.id), synthetic: \(session.isSynthetic), echoCancellation: true}); 0"
+        let id = session.id
+        let sentAt = ProcessInfo.processInfo.systemUptime
+        let script = "ffCapture.start({sid: \(id), synthetic: \(session.isSynthetic), echoCancellation: true}); 0"
         webView.evaluateJavaScript(script) { [weak self, weak session] _, error in
-            guard let session else { return }
+            let milliseconds = Int((ProcessInfo.processInfo.systemUptime - sentAt) * 1000)
             if error != nil {
-                self?.pageCommandFailed(session: session.id)
-            } else {
-                session.pageAnsweredStart = true
+                self?.pageCommandFailed(session: id)
+                return
             }
+            session?.pageAnsweredStart = true
+            WebAudioCapture.log.info("Capture page ran the start command for session \(id, privacy: .public) after \(milliseconds, privacy: .public) ms")
         }
     }
 
@@ -405,10 +484,25 @@ final class WebAudioCapture: NSObject {
 
     private func pageCommandFailed(session id: Int) {
         Self.log.error("Capture page command failed for session \(id, privacy: .public)")
+        guard let session else {
+            // Nothing is recording, so stopping WebKit's capture can't cut a healthy session.
+            webView.setMicrophoneCaptureState(.none, completionHandler: nil)
+            return
+        }
+        // A late error for an earlier session says nothing about this one.
+        guard session.id == id else { return }
         // The page may be wedged, so stop WebKit's capture directly.
         webView.setMicrophoneCaptureState(.none, completionHandler: nil)
-        guard let session, session.id == id else { return }
-        fail(session, .pageUnavailable, cancellingPage: false)
+        endForLostPage(session)
+    }
+
+    private func rejectStale(_ type: String, session id: Int) -> Bool {
+        if type == "pcm" {
+            guard lastStaleChunkSession != id else { return false }
+            lastStaleChunkSession = id
+        }
+        Self.log.info("Capture page \(type, privacy: .public) for session \(id, privacy: .public) ignored; current session \(self.session?.id ?? 0, privacy: .public)")
+        return false
     }
 
     // MARK: Sessions
@@ -452,24 +546,16 @@ final class WebAudioCapture: NSObject {
             return
         }
         guard session.pageAnsweredStart else {
-            // The page's web process ran no script at all, so it is stuck or suspended. A fresh
-            // load gives the next start a working page.
-            Self.log.error("Capture page did not answer the start command within \(self.startTimeoutInterval, privacy: .public) s; reloading it")
+            // The page's WebContent process ran no script at all. Queue a cancel behind the
+            // unanswered start in case the old page wakes up, and move to a fresh web view
+            // before reporting, so a retry from didFail waits for the new page.
+            Self.log.error("Capture page did not run the start command within \(self.startTimeoutInterval, privacy: .public) s; replacing the web view")
+            sendPageCommand("cancel", session: id)
+            replaceWebView()
             fail(session, .pageUnavailable, cancellingPage: false)
-            reloadPage()
             return
         }
         fail(session, .startTimedOut, cancellingPage: true)
-    }
-
-    private func reloadPage() {
-        let previous = state
-        isPageLoaded = false
-        isPageLoading = false
-        if isAttached {
-            loadPage()
-        }
-        updateState(from: previous)
     }
 
     private func stopTimeoutPassed(session id: Int) {
@@ -479,6 +565,17 @@ final class WebAudioCapture: NSObject {
             sendPageCommand("cancel", session: id)
         }
         finish(session)
+    }
+
+    /// The page went away under a session. One that is stopping keeps the audio already
+    /// written; any other fails.
+    private func endForLostPage(_ session: Session) {
+        if session.phase == .stopping {
+            Self.log.info("Capture session \(session.id, privacy: .public) lost its page while stopping; finishing with the audio received")
+            finish(session)
+        } else {
+            fail(session, .pageUnavailable, cancellingPage: false)
+        }
     }
 
     private func finish(_ session: Session) {
@@ -632,7 +729,8 @@ final class WebAudioCapture: NSObject {
 
 /// WebKit's side of WebAudioCapture. WKUserContentController retains its message handlers,
 /// so they live here and hold the capture weakly, which avoids a retain cycle through the
-/// web view.
+/// web view. Web views the capture has replaced stay attached to this bridge, which ignores
+/// or refuses everything they send.
 @MainActor
 private final class CaptureBridge: NSObject, WKScriptMessageHandlerWithReply, WKUIDelegate, WKNavigationDelegate {
     weak var owner: WebAudioCapture?
@@ -650,6 +748,10 @@ private final class CaptureBridge: NSObject, WKScriptMessageHandlerWithReply, WK
             replyHandler(nil, "released")
             return
         }
+        guard message.webView === owner.webView else {
+            replyHandler(nil, "replaced")
+            return
+        }
         replyHandler(nil, owner.receive(message) ? nil : "rejected")
     }
 
@@ -660,7 +762,7 @@ private final class CaptureBridge: NSObject, WKScriptMessageHandlerWithReply, WK
         type: WKMediaCaptureType,
         decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void
     ) {
-        let grant = WebAudioCapture.shouldGrantMediaCapture(
+        let grant = webView === owner?.webView && WebAudioCapture.shouldGrantMediaCapture(
             type: type,
             originProtocol: origin.protocol,
             originHost: origin.host,
@@ -674,18 +776,25 @@ private final class CaptureBridge: NSObject, WKScriptMessageHandlerWithReply, WK
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
     ) {
-        decisionHandler(owner?.shouldAllowNavigation(navigationAction) == true ? .allow : .cancel)
+        guard let owner, webView === owner.webView else {
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(owner.shouldAllowNavigation(navigationAction) ? .allow : .cancel)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        owner?.pageLoadFailed()
+        guard let owner, webView === owner.webView else { return }
+        owner.pageLoadFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        owner?.pageLoadFailed()
+        guard let owner, webView === owner.webView else { return }
+        owner.pageLoadFailed(error)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        owner?.webContentProcessDidTerminate()
+        guard let owner, webView === owner.webView else { return }
+        owner.webContentProcessDidTerminate()
     }
 }
