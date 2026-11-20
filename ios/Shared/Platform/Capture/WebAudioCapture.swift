@@ -43,8 +43,9 @@ protocol WebAudioCaptureDelegate: AnyObject {
 }
 
 /// Microphone capture for the keyboard through a hidden WKWebView, because a
-/// keyboard extension can't record with AVAudioSession itself. See
-/// ios/README.md for how it works and why.
+/// keyboard extension can't record with AVAudioSession itself. It lives in
+/// ios/Shared so the app-hosted unit tests can exercise it in the simulator,
+/// where WebKit substitutes a deterministic mock microphone.
 ///
 /// CONTRACT STUB: owned by the capture agent, which implements it. Keep the
 /// signatures and the delegate contract.

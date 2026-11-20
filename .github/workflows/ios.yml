@@ -219,6 +219,9 @@ jobs:
 
   xcode-27-build:
     name: Build (Xcode 27 preview)
+    # Pull requests and manual runs only, to save macOS runner slots while
+    # work-in-progress branches iterate.
+    if: github.event_name != 'push'
     runs-on: xcode-27
     # The xcode-27 image is a preview. Report breakage without failing the run.
     continue-on-error: true
