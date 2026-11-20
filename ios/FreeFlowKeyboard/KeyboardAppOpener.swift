@@ -15,18 +15,23 @@ import UIKit
 /// MIT License, Copyright (c) 2026 Christopher Langton.
 @MainActor
 enum KeyboardAppOpener {
-    private typealias OpenURLFunction = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, AnyObject?) -> Void
+    private typealias Completion = @convention(block) (Bool) -> Void
+    private typealias OpenURLFunction = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, Completion?) -> Void
 
     /// Returns false when no UIApplication answering the selector was found.
-    /// iOS doesn't report whether the app actually opened.
-    static func open(_ url: URL, from responder: UIResponder) -> Bool {
+    /// Otherwise iOS later calls `completion` on the main queue with whether
+    /// the app opened; treat a missing call as success.
+    static func open(_ url: URL, from responder: UIResponder, completion: @escaping (Bool) -> Void) -> Bool {
         let selector = NSSelectorFromString("openURL:options:completionHandler:")
         var current: UIResponder? = responder
         while let candidate = current {
             if candidate.isKind(of: UIApplication.self), candidate.responds(to: selector) {
                 let implementation = candidate.method(for: selector)
                 let openURL = unsafeBitCast(implementation, to: OpenURLFunction.self)
-                openURL(candidate, selector, url as NSURL, NSDictionary(), nil)
+                let reportResult: Completion = { opened in
+                    completion(opened)
+                }
+                openURL(candidate, selector, url as NSURL, NSDictionary(), reportResult)
                 return true
             }
             current = candidate.next

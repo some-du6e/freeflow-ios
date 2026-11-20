@@ -13,11 +13,18 @@ final class KeyboardPanelView: UIView {
     static let micDiameter: CGFloat = 104
     /// From the mic's center to a side button's center.
     static let sideButtonOffset: CGFloat = 100
+    /// Three lines of the 13 pt status font (15.5 pt each).
+    static let statusHeight: CGFloat = 47
+    /// Narrower keyboards show Insert last as a symbol only, which leaves the
+    /// status line room for three lines.
+    static let insertLastTitleMinimumWidth: CGFloat = 360
+    static let insertLastTitle = "Insert last"
+    static let insertLastSymbol = "arrow.uturn.backward"
 
     let statusLabel = UILabel()
     let insertLastButton = KeyboardKeyButton(
-        title: "Insert last",
-        symbolName: "arrow.uturn.backward",
+        title: KeyboardPanelView.insertLastTitle,
+        symbolName: KeyboardPanelView.insertLastSymbol,
         accessibilityLabel: "Insert last dictation",
         identifier: KeyboardAccessibilityID.insertLast
     )
@@ -69,6 +76,7 @@ final class KeyboardPanelView: UIView {
     private let middleGuide = UILayoutGuide()
     private let statusFont = UIFont.systemFont(ofSize: 13, weight: .semibold)
     private let longStatusFont = UIFont.systemFont(ofSize: 12, weight: .medium)
+    private var showsInsertLastTitle = true
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -80,6 +88,14 @@ final class KeyboardPanelView: UIView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not used")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let showsTitle = bounds.width >= Self.insertLastTitleMinimumWidth
+        guard showsTitle != showsInsertLastTitle else { return }
+        showsInsertLastTitle = showsTitle
+        insertLastButton.setContent(title: showsTitle ? Self.insertLastTitle : nil, symbolName: Self.insertLastSymbol)
     }
 
     // MARK: Rendering
@@ -178,7 +194,7 @@ final class KeyboardPanelView: UIView {
         NSLayoutConstraint.activate([
             statusLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            statusLabel.heightAnchor.constraint(equalToConstant: 44),
+            statusLabel.heightAnchor.constraint(equalToConstant: Self.statusHeight),
             statusLabel.trailingAnchor.constraint(equalTo: insertLastButton.leadingAnchor, constant: -10),
 
             insertLastButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),

@@ -40,6 +40,11 @@ enum IOSKeyboardCoreTests {
         testFallbackHandoffFlow()
         testHandoffResultInsertion()
         testHandoffWaitEnds()
+        testBlockedPressesKeepWaitingForTheApp()
+        testHandoffAdoptionCountsFromTheOpenTime()
+        testInsertLastPrefersTheNewestSource()
+        testRememberedTextCoversHistoryOff()
+        testHandoffLedger()
         testDisappearingCancelsCapture()
         testHapticsNeedFullAccess()
         testDisplayForEveryPhase()
@@ -285,6 +290,7 @@ enum IOSKeyboardCoreTests {
             .deleteAudio(audio.fileURL),
             .insert(TranscriptRouting.insertionText(for: "Hello world.", precedingText: "Note:")),
             .recordHistory(draft(.inserted, at: 5, raw: "hello world", text: "Hello world.")),
+            .rememberForInsertLast(text: "Hello world.", at: at(5)),
             .announce("Inserted"),
         ])
         TestSupport.expectEqual(machine.phase, .inserted(.dictation, until: at(6.5)))
@@ -579,6 +585,7 @@ enum IOSKeyboardCoreTests {
             .insert(TranscriptRouting.insertionText(for: "Ship it.", precedingText: nil)),
             .insert("\n"),
             .recordHistory(draft(.inserted, at: 4, raw: "ship it press enter", text: "Ship it.")),
+            .rememberForInsertLast(text: "Ship it.", at: at(4)),
             .announce("Inserted"),
         ])
     }
@@ -591,7 +598,7 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(effects, [
             .deleteAudio(audio.fileURL),
             .insert("\n"),
-            .recordHistory(draft(.inserted, at: 4, raw: "press enter", text: "", route: .empty)),
+            .recordHistory(draft(.nothingToInsert, at: 4, raw: "press enter", text: "", route: .empty)),
             .announce("Pressed return"),
         ])
         TestSupport.expectEqual(machine.phase, .inserted(.returnOnly, until: at(5.5)))
@@ -606,6 +613,10 @@ enum IOSKeyboardCoreTests {
             effects.contains(.recordHistory(draft(.rawFallback, at: 4, raw: "um hello there", text: "um hello there"))),
             "A raw fallback must be recorded as rawFallback"
         )
+        TestSupport.expect(
+            effects.contains(.rememberForInsertLast(text: "um hello there", at: at(4))),
+            "A raw fallback must be kept for Insert last"
+        )
         TestSupport.expectEqual(insertions(effects), [TranscriptRouting.insertionText(for: "um hello there", precedingText: "Dear Sam,")])
         TestSupport.expectEqual(machine.phase, .inserted(.rawFallback, until: at(5.5)))
         TestSupport.expectEqual(text(machine), "Inserted without cleanup")
@@ -618,6 +629,7 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(effects, [
             .deleteAudio(audio.fileURL),
             .recordHistory(draft(.notInserted, at: 4, raw: "Hello.", text: "Hello.")),
+            .rememberForInsertLast(text: "Hello.", at: at(4)),
             .announce(KeyboardDictationMachine.fieldChangedMessage),
         ])
         TestSupport.expectEqual(machine.phase, .error(message: KeyboardDictationMachine.fieldChangedMessage, until: at(10)))
@@ -628,6 +640,10 @@ enum IOSKeyboardCoreTests {
         let enterOnly = DictationResult(rawTranscript: "press enter", text: "", pressEnter: true, route: .empty, usedRawFallback: false)
         let enterEffects = enter.handle(.pipelineFinished(attempt: 1, result: enterOnly, document: document(fieldB)), now: at(4))
         TestSupport.expectEqual(insertions(enterEffects), [])
+        TestSupport.expect(
+            !enterEffects.contains { if case .rememberForInsertLast = $0 { return true }; return false },
+            "Return alone leaves nothing for Insert last"
+        )
         TestSupport.expectEqual(enter.phase, .error(message: KeyboardDictationMachine.fieldChangedReturnMessage, until: at(10)))
     }
 
@@ -655,6 +671,10 @@ enum IOSKeyboardCoreTests {
         TestSupport.expect(
             effects.contains(.recordHistory(draft(.notInserted, at: 5, raw: "Hello.", text: "Hello."))),
             "A result the keyboard couldn't insert must stay in history for Insert last"
+        )
+        TestSupport.expect(
+            effects.contains(.rememberForInsertLast(text: "Hello.", at: at(5))),
+            "A result the keyboard couldn't insert must stay available to Insert last"
         )
         TestSupport.expectEqual(status(machine), .error)
 
@@ -798,24 +818,33 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(machine.nextWakeUp, at(2))
         TestSupport.expectEqual(machine.handle(.tick, now: at(1.5)), [])
         TestSupport.expectEqual(machine.handle(.tick, now: at(2)), [.checkForAppResult])
-        effects = machine.handle(.handoffPending(sessionID: sessionOne), now: at(2))
+        effects = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: at(1)), now: at(2))
         TestSupport.expectEqual(effects, [])
         TestSupport.expectEqual(machine.phase, .waitingForApp(sessionID: sessionOne, since: at(1), nextCheck: at(3)))
 
         // Hidden (the user is in FreeFlow), only the wait limit remains.
         _ = machine.handle(.disappeared, now: at(2.5))
-        TestSupport.expectEqual(machine.nextWakeUp, at(181))
+        TestSupport.expectEqual(machine.nextWakeUp, at(421))
         TestSupport.expectEqual(machine.handle(.tick, now: at(3)), [])
 
+        // Back after longer than a result stays fresh, with the app still
+        // transcribing: keep waiting rather than drop the session.
+        _ = machine.handle(.appeared, now: at(200))
+        TestSupport.expectEqual(machine.handle(.handoffPending(sessionID: sessionOne, openedAt: at(1)), now: at(200)), [])
+        TestSupport.expectEqual(machine.handle(.tick, now: at(201)), [.checkForAppResult])
+        TestSupport.expectEqual(status(machine), .waitingForApp)
+        _ = machine.handle(.disappeared, now: at(202))
+
         // Opening again reuses the session being waited on.
-        _ = machine.handle(.appeared, now: at(4))
-        TestSupport.expectEqual(machine.handle(.openAppTapped(newSessionID: sessionTwo), now: at(5)), [.openApp(sessionID: sessionOne)])
+        _ = machine.handle(.appeared, now: at(204))
+        TestSupport.expectEqual(machine.handle(.openAppTapped(newSessionID: sessionTwo), now: at(205)), [.openApp(sessionID: sessionOne)])
+        TestSupport.expectEqual(machine.phase, .waitingForApp(sessionID: sessionOne, since: at(205), nextCheck: at(206)))
 
         // With no way to open the app, say so and stop waiting.
-        effects = machine.handle(.appOpenFailed, now: at(5))
+        effects = machine.handle(.appOpenFailed, now: at(205))
         TestSupport.expectEqual(effects, [.stopAwaitingApp, .announce("Couldn't open FreeFlow. Open it from your Home Screen.")])
         TestSupport.expectEqual(machine.phase, .fallbackAvailable(.openFailed))
-        TestSupport.expectEqual(machine.handle(.openAppTapped(newSessionID: sessionTwo), now: at(6)), [.openApp(sessionID: sessionTwo)])
+        TestSupport.expectEqual(machine.handle(.openAppTapped(newSessionID: sessionTwo), now: at(206)), [.openApp(sessionID: sessionTwo)])
 
         var idle = readyMachine()
         TestSupport.expectEqual(idle.handle(.openAppTapped(newSessionID: sessionTwo), now: t0), [])
@@ -825,7 +854,7 @@ enum IOSKeyboardCoreTests {
 
     private static func testHandoffResultInsertion() {
         var machine = readyMachine()
-        _ = machine.handle(.handoffPending(sessionID: sessionOne), now: at(0))
+        _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
         TestSupport.expectEqual(machine.phase, .waitingForApp(sessionID: sessionOne, since: at(0), nextCheck: at(1)))
 
         let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "From the app.", pressEnter: true)
@@ -834,12 +863,13 @@ enum IOSKeyboardCoreTests {
             .stopAwaitingApp,
             .insert(TranscriptRouting.insertionText(for: "From the app.", precedingText: "Hi")),
             .insert("\n"),
+            .rememberForInsertLast(text: "From the app.", at: at(12)),
             .announce("Inserted from FreeFlow"),
         ])
         TestSupport.expectEqual(machine.phase, .inserted(.handoff, until: at(13.5)))
 
         var stale = readyMachine()
-        _ = stale.handle(.handoffPending(sessionID: sessionOne), now: at(0))
+        _ = stale.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
         let old = PendingDictation(sessionID: sessionOne, createdAt: at(0), text: "Old.", pressEnter: false)
         TestSupport.expectEqual(stale.handle(.handoffResultArrived(old, document: document()), now: at(500)), [.stopAwaitingApp])
         TestSupport.expectEqual(stale.phase, .idle)
@@ -861,13 +891,13 @@ enum IOSKeyboardCoreTests {
 
         var busy = recordingMachine()
         TestSupport.expectEqual(busy.handle(.handoffResultArrived(pending, document: document()), now: at(12)), [])
-        TestSupport.expectEqual(busy.handle(.handoffPending(sessionID: sessionOne), now: at(12)), [])
+        TestSupport.expectEqual(busy.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(12)), [])
         TestSupport.expectEqual(status(busy), .recording)
     }
 
     private static func testHandoffWaitEnds() {
         var machine = readyMachine()
-        _ = machine.handle(.handoffPending(sessionID: sessionOne), now: at(0))
+        _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
         TestSupport.expectEqual(status(machine), .waitingForApp)
 
         var cancelled = machine
@@ -887,14 +917,162 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(effects.first, .stopAwaitingApp)
         TestSupport.expectEqual(status(insertedLast), .inserted)
 
+        // After the app recorder's longest run plus time to transcribe, give up.
+        TestSupport.expectEqual(KeyboardDictationMachine.handoffWaitLimit, 420)
+        TestSupport.expect(
+            KeyboardDictationMachine.handoffWaitLimit > KeyboardDictationMachine.maximumRecordingDuration,
+            "The wait must cover a full-length recording in the app"
+        )
         var expired = machine
-        TestSupport.expectEqual(expired.handle(.tick, now: at(PendingDictation.maxAge)), [.stopAwaitingApp])
+        TestSupport.expectEqual(expired.handle(.tick, now: at(419.5)), [.checkForAppResult])
+        TestSupport.expectEqual(expired.handle(.tick, now: at(420)), [.stopAwaitingApp])
         TestSupport.expectEqual(expired.phase, .idle)
 
         // A different session found in the store replaces the one waited on.
         var other = machine
-        _ = other.handle(.handoffPending(sessionID: sessionTwo), now: at(5))
+        _ = other.handle(.handoffPending(sessionID: sessionTwo, openedAt: nil), now: at(5))
         TestSupport.expectEqual(other.phase, .waitingForApp(sessionID: sessionTwo, since: at(5), nextCheck: at(6)))
+    }
+
+    private static func testBlockedPressesKeepWaitingForTheApp() {
+        var machine = readyMachine()
+        _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
+        let waiting = machine.phase
+
+        let lowMemory = KeyboardDictationSetup(hasFullAccess: true, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: 1024)
+        _ = machine.handle(.setupChanged(lowMemory), now: at(1))
+        TestSupport.expectEqual(machine.phase, waiting)
+        TestSupport.expectEqual(
+            machine.handle(.micPressBegan(documentID: nil), now: at(1)),
+            [.announce("Not enough memory to record here. Record in FreeFlow instead.")]
+        )
+        TestSupport.expectEqual(machine.phase, waiting)
+
+        _ = machine.handle(.setupChanged(noAPIKey), now: at(2))
+        TestSupport.expectEqual(
+            machine.handle(.micPressBegan(documentID: nil), now: at(2)),
+            [.announce("Open FreeFlow to add your API key")]
+        )
+        TestSupport.expectEqual(machine.phase, waiting)
+        TestSupport.expectEqual(machine.attempt, 0)
+
+        _ = machine.handle(.setupChanged(ready), now: at(3))
+        TestSupport.expectEqual(machine.handle(.micPressBegan(documentID: nil), now: at(3)), [.stopAwaitingApp, .startCapture])
+        TestSupport.expectEqual(status(machine), .starting)
+    }
+
+    private static func testHandoffAdoptionCountsFromTheOpenTime() {
+        var adopted = readyMachine()
+        TestSupport.expectEqual(adopted.handle(.handoffPending(sessionID: sessionOne, openedAt: at(100)), now: at(150)), [])
+        TestSupport.expectEqual(adopted.phase, .waitingForApp(sessionID: sessionOne, since: at(100), nextCheck: at(151)))
+        TestSupport.expectEqual(adopted.nextWakeUp, at(151))
+        _ = adopted.handle(.disappeared, now: at(152))
+        TestSupport.expectEqual(adopted.nextWakeUp, at(520))
+
+        var nearlyOver = readyMachine()
+        _ = nearlyOver.handle(.handoffPending(sessionID: sessionOne, openedAt: at(0)), now: at(419.5))
+        TestSupport.expectEqual(status(nearlyOver), .waitingForApp)
+
+        // A session opened longer ago than the wait limit has ended.
+        var ended = readyMachine()
+        TestSupport.expectEqual(ended.handle(.handoffPending(sessionID: sessionOne, openedAt: at(0)), now: at(420)), [.stopAwaitingApp])
+        TestSupport.expectEqual(ended.phase, .idle)
+
+        var endedWhileShowingAnother = readyMachine()
+        _ = endedWhileShowingAnother.handle(.handoffPending(sessionID: sessionTwo, openedAt: nil), now: at(500))
+        TestSupport.expectEqual(
+            endedWhileShowingAnother.handle(.handoffPending(sessionID: sessionOne, openedAt: at(0)), now: at(501)),
+            [.stopAwaitingApp]
+        )
+        TestSupport.expectEqual(endedWhileShowingAnother.phase, .idle)
+    }
+
+    private static func testInsertLastPrefersTheNewestSource() {
+        let older = HistoryEntry(
+            createdAt: at(10),
+            source: .app,
+            status: .handedOff,
+            rawTranscript: "from history",
+            text: "From history.",
+            durationSeconds: 1
+        )
+        let failed = HistoryEntry(
+            createdAt: at(30),
+            source: .keyboard,
+            status: .failed,
+            rawTranscript: "",
+            text: "",
+            errorMessage: "Synthetic failure",
+            durationSeconds: 1
+        )
+        let newer = HistoryEntry(
+            createdAt: at(40),
+            source: .app,
+            status: .handedOff,
+            rawTranscript: "newer from the app",
+            text: "Newer from the app.",
+            durationSeconds: 1
+        )
+        let remembered = KeyboardRememberedText(text: "Remembered.", savedAt: at(20))
+
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: nil, history: []), nil)
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: remembered, history: []), "Remembered.")
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: nil, history: [failed, older]), "From history.")
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: remembered, history: [failed, older]), "Remembered.")
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: remembered, history: [newer, failed, older]), "Newer from the app.")
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: nil, history: [older, newer]), "Newer from the app.")
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: nil, history: [failed]), nil)
+    }
+
+    private static func testRememberedTextCoversHistoryOff() {
+        // With Keep History off nothing new reaches history, so Insert last
+        // must still find the dictation that couldn't be inserted.
+        let audio = sampleAudio()
+        var machine = processingMachine(audio, documentID: fieldA)
+        let effects = machine.handle(.pipelineFinished(attempt: 1, result: result("Lost field."), document: document(fieldB)), now: at(4))
+        var remembered: KeyboardRememberedText?
+        for effect in effects {
+            if case .rememberForInsertLast(let text, let time) = effect {
+                remembered = KeyboardRememberedText(text: text, savedAt: time)
+            }
+        }
+        TestSupport.expectEqual(remembered, KeyboardRememberedText(text: "Lost field.", savedAt: at(4)))
+
+        let fromBeforeHistoryWasOff = HistoryEntry(
+            createdAt: at(1),
+            source: .keyboard,
+            status: .inserted,
+            rawTranscript: "older words",
+            text: "Older words.",
+            durationSeconds: 1
+        )
+        let text = KeyboardInsertLast.text(remembered: remembered, history: [fromBeforeHistoryWasOff])
+        TestSupport.expectEqual(text, "Lost field.")
+
+        let inserted = machine.handle(.insertLastTapped(text: text, document: document(fieldB, before: "Hi")), now: at(5))
+        TestSupport.expectEqual(insertions(inserted), [TranscriptRouting.insertionText(for: "Lost field.", precedingText: "Hi")])
+    }
+
+    private static func testHandoffLedger() {
+        let suite = "FreeFlowTests.IOSKeyboardCore.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            TestSupport.expect(false, "A test defaults suite must open")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let ledger = KeyboardHandoffLedger(defaults: defaults)
+        TestSupport.expect(ledger.openedAt(sessionID: sessionOne) == nil, "Nothing is recorded at first")
+        ledger.recordOpen(sessionID: sessionOne, at: at(42))
+        TestSupport.expectEqual(ledger.openedAt(sessionID: sessionOne), at(42))
+        TestSupport.expect(ledger.openedAt(sessionID: sessionTwo) == nil, "Another session has no open time")
+
+        ledger.recordOpen(sessionID: sessionTwo, at: at(50))
+        TestSupport.expect(ledger.openedAt(sessionID: sessionOne) == nil, "Only the latest session is kept")
+        TestSupport.expectEqual(ledger.openedAt(sessionID: sessionTwo), at(50))
+
+        let reopened = KeyboardHandoffLedger(defaults: defaults)
+        TestSupport.expectEqual(reopened.openedAt(sessionID: sessionTwo), at(50))
     }
 
     // MARK: Lifecycle and feedback

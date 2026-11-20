@@ -20,10 +20,14 @@ final class KeyboardViewController: UIInputViewController {
     /// One capture per keyboard process. Its web view stays loaded between
     /// dictations and moves to whichever controller is on screen.
     private static var processCapture: WebAudioCapture?
+    /// This process's latest result for Insert last. In memory only.
+    private static var rememberedText: KeyboardRememberedText?
 
     private var machine = KeyboardDictationMachine()
-    private var queuedEvents: [KeyboardDictationEvent] = []
+    /// Events with the time they happened; nil means when handled.
+    private var queuedEvents: [(event: KeyboardDictationEvent, time: Date?)] = []
     private var isHandlingEvents = false
+    private let handoffLedger = KeyboardHandoffLedger(defaults: .standard)
 
     private var rootInputView: KeyboardInputView?
     private var panel: KeyboardPanelView?
@@ -192,8 +196,12 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func wire(_ panel: KeyboardPanelView) {
-        panel.micButton.addTarget(self, action: #selector(micTouchDown), for: .touchDown)
-        panel.micButton.addTarget(self, action: #selector(micTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        panel.micButton.addTarget(self, action: #selector(micTouchDown(_:forEvent:)), for: .touchDown)
+        panel.micButton.addTarget(
+            self,
+            action: #selector(micTouchUp(_:forEvent:)),
+            for: [.touchUpInside, .touchUpOutside, .touchCancel]
+        )
         panel.cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         panel.doneButton.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
         panel.openAppButton.addTarget(self, action: #selector(openAppTapped), for: .touchUpInside)
@@ -219,15 +227,23 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Controls
 
-    @objc private func micTouchDown() {
+    @objc private func micTouchDown(_ sender: UIControl, forEvent event: UIEvent) {
         guard !isShowingDebugState else { return }
         send(.setupChanged(currentSetup()))
-        send(.micPressBegan(documentID: textDocumentProxy.documentIdentifier))
+        send(.micPressBegan(documentID: textDocumentProxy.documentIdentifier), at: Self.time(of: event))
     }
 
-    @objc private func micTouchUp() {
+    @objc private func micTouchUp(_ sender: UIControl, forEvent event: UIEvent) {
         guard !isShowingDebugState else { return }
-        send(.micPressEnded)
+        send(.micPressEnded, at: Self.time(of: event))
+    }
+
+    /// When the touch happened. Tap and hold are told apart by touch times,
+    /// so work done while handling the press doesn't count as holding.
+    private static func time(of event: UIEvent) -> Date {
+        let time = Date(timeIntervalSinceNow: event.timestamp - ProcessInfo.processInfo.systemUptime)
+        // Fall back to now for a synthesized event without a usable timestamp.
+        return abs(time.timeIntervalSinceNow) < 5 ? time : Date()
     }
 
     @objc private func cancelTapped() {
@@ -248,7 +264,8 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func insertLastTapped() {
         guard !isShowingDebugState else { return }
         UIDevice.current.playInputClick()
-        send(.insertLastTapped(text: HistoryStore.shared.latestInsertableText(), document: currentDocument()))
+        let text = KeyboardInsertLast.text(remembered: Self.rememberedText, history: HistoryStore.shared.load())
+        send(.insertLastTapped(text: text, document: currentDocument()))
     }
 
     @objc private func spaceTapped() {
@@ -283,13 +300,13 @@ final class KeyboardViewController: UIInputViewController {
 
     /// Events raised while effects run (capture callbacks can fire
     /// synchronously) queue up and are handled in order.
-    private func send(_ event: KeyboardDictationEvent) {
-        queuedEvents.append(event)
+    private func send(_ event: KeyboardDictationEvent, at time: Date? = nil) {
+        queuedEvents.append((event: event, time: time))
         guard !isHandlingEvents else { return }
         isHandlingEvents = true
         while !queuedEvents.isEmpty {
             let next = queuedEvents.removeFirst()
-            let effects = machine.handle(next, now: Date())
+            let effects = machine.handle(next.event, now: next.time ?? Date())
             for effect in effects {
                 carryOut(effect)
             }
@@ -323,6 +340,8 @@ final class KeyboardViewController: UIInputViewController {
             textDocumentProxy.insertText(text)
         case .recordHistory(let draft):
             HistoryStore.shared.append(draft.makeEntry())
+        case .rememberForInsertLast(let text, let time):
+            Self.rememberedText = KeyboardRememberedText(text: text, savedAt: time)
         case .openApp(let sessionID):
             openContainingApp(sessionID: sessionID)
         case .stopAwaitingApp:
@@ -440,17 +459,20 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
         let pipeline = DictationPipeline()
-        pipelineTask = Task { [weak self] in
+        // Holds the controller until the request ends (it's bounded by the
+        // pipeline's timeouts): if the keyboard closes meanwhile, the machine
+        // still records the result for Insert last and deletes the audio.
+        pipelineTask = Task { [self] in
             do {
                 let result = try await pipeline.run(audioFileURL: audioFileURL, configuration: configuration)
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled else { return }
                 keyboardLog.info("dictation finished: \(result.route.rawValue, privacy: .public)")
-                self.send(.pipelineFinished(attempt: attempt, result: result, document: self.currentDocument()))
+                send(.pipelineFinished(attempt: attempt, result: result, document: currentDocument()))
             } catch {
-                guard !Task.isCancelled, !(error is CancellationError), let self else { return }
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
                 keyboardLog.error("dictation failed: \(String(describing: type(of: error)), privacy: .public)")
                 let message = DictationPipeline.userFacingMessage(for: error, isOnline: NetworkMonitor.shared.isOnline)
-                self.send(.pipelineFailed(attempt: attempt, message: message))
+                send(.pipelineFailed(attempt: attempt, message: message))
             }
         }
     }
@@ -467,6 +489,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func openContainingApp(sessionID: UUID) {
         PendingDictationStore.shared.awaitedSessionID = sessionID
+        handoffLedger.recordOpen(sessionID: sessionID, at: Date())
         // Start from the view iOS put in the keyboard window; its responder
         // chain ends at the extension's UIApplication.
         let responder: UIResponder
@@ -475,8 +498,14 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             responder = self
         }
-        if KeyboardAppOpener.open(KeyboardHandoffURL.dictate(sessionID: sessionID), from: responder) {
-            keyboardLog.info("opened FreeFlow for the fallback")
+        let url = KeyboardHandoffURL.dictate(sessionID: sessionID)
+        let found = KeyboardAppOpener.open(url, from: responder) { [weak self] opened in
+            guard !opened else { return }
+            keyboardLog.error("iOS didn't open FreeFlow")
+            self?.send(.appOpenFailed)
+        }
+        if found {
+            keyboardLog.info("asked iOS to open FreeFlow for the fallback")
         } else {
             keyboardLog.error("found no UIApplication to open FreeFlow")
             send(.appOpenFailed)
@@ -494,7 +523,7 @@ final class KeyboardViewController: UIInputViewController {
         if let pending = store.take(sessionID: sessionID, now: Date()) {
             send(.handoffResultArrived(pending, document: currentDocument()))
         } else {
-            send(.handoffPending(sessionID: sessionID))
+            send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
         }
     }
 

@@ -124,7 +124,8 @@ enum KeyboardDictationEvent: Equatable {
     /// `PendingDictationStore.take` returned the app's result.
     case handoffResultArrived(PendingDictation, document: KeyboardDictationDocument)
     /// The store is still waiting on `sessionID` and has no result yet.
-    case handoffPending(sessionID: UUID)
+    /// `openedAt` is when this keyboard opened the app for it, if known.
+    case handoffPending(sessionID: UUID, openedAt: Date?)
     /// The store isn't waiting on any session.
     case handoffAbsent
     /// A deadline from `nextWakeUp` passed.
@@ -146,6 +147,10 @@ enum KeyboardDictationEffect: Equatable {
     case stopAwaitingApp
     /// Ask `PendingDictationStore` whether the app's result has arrived.
     case checkForAppResult
+    /// Keep this text in memory for Insert last, so it works even with Keep
+    /// History off (macOS Paste Again uses the last transcript the same way).
+    /// Never persisted.
+    case rememberForInsertLast(text: String, at: Date)
     /// A light haptic on start and stop; only emitted with Full Access.
     case haptic
     /// For `KeyboardStatus.inKeyboardCaptureWorked` and `lastCaptureFailure`.
@@ -178,9 +183,12 @@ struct KeyboardDictationMachine: Equatable {
     /// Matches the macOS overlay's error toast.
     static let errorDisplayDuration: TimeInterval = 6
     static let handoffCheckInterval: TimeInterval = 1
-    /// Stop waiting for the app after as long as a handed-off result stays
-    /// fresh.
-    static let handoffWaitLimit: TimeInterval = PendingDictation.maxAge
+    /// Time the app gets to transcribe after its recorder stops.
+    static let handoffProcessingMargin: TimeInterval = 120
+    /// How long to wait for the app after opening it: as long as its recorder
+    /// can run, plus time to transcribe. A delivered result then stays fresh
+    /// for `PendingDictation.maxAge`, which the store checks.
+    static let handoffWaitLimit: TimeInterval = maximumRecordingDuration + handoffProcessingMargin
     /// Error text is cut to this many characters, like the macOS overlay.
     static let maximumMessageLength = 90
 
@@ -301,6 +309,11 @@ struct KeyboardDictationMachine: Equatable {
         }
     }
 
+    var isWaitingForApp: Bool {
+        if case .waitingForApp = phase { return true }
+        return false
+    }
+
     /// When the controller should send `.tick` next, if ever.
     var nextWakeUp: Date? {
         switch phase {
@@ -363,8 +376,8 @@ struct KeyboardDictationMachine: Equatable {
             return pipelineFailed(attempt: failedAttempt, message: message, now: now)
         case .handoffResultArrived(let pending, let document):
             return handoffResultArrived(pending, document: document, now: now)
-        case .handoffPending(let sessionID):
-            return handoffPending(sessionID: sessionID, now: now)
+        case .handoffPending(let sessionID, let openedAt):
+            return handoffPending(sessionID: sessionID, openedAt: openedAt, now: now)
         case .handoffAbsent:
             if case .waitingForApp = phase { phase = restingPhase }
             return []
@@ -483,20 +496,24 @@ struct KeyboardDictationMachine: Equatable {
         if case .processing = phase { return [] }
         guard let setup else { return [] }
 
-        var effects: [KeyboardDictationEffect] = []
-        if case .waitingForApp = phase { effects.append(.stopAwaitingApp) }
-
+        // A press that can't record doesn't replace a dictation the app is
+        // still recording: keep waiting and only say why.
         if let issue = setup.blockingIssue {
+            if isWaitingForApp {
+                return [.announce(KeyboardDictationDisplay.setupText(for: issue))]
+            }
             phase = .setupNeeded(issue)
-            effects.append(announcement)
-            return effects
+            return [announcement]
         }
         guard setup.hasMemoryToRecord else {
+            if isWaitingForApp {
+                return [.announce(KeyboardDictationDisplay.fallbackText(for: .lowMemory))]
+            }
             phase = .fallbackAvailable(.lowMemory)
-            effects.append(announcement)
-            return effects
+            return [announcement]
         }
 
+        let replacesHandoff = isWaitingForApp
         attempt += 1
         phase = .starting(Recording(
             attempt: attempt,
@@ -505,8 +522,7 @@ struct KeyboardDictationMachine: Equatable {
             gesture: .pressing(since: now),
             documentID: documentID
         ))
-        effects.append(.startCapture)
-        return effects
+        return replacesHandoff ? [.stopAwaitingApp, .startCapture] : [.startCapture]
     }
 
     private mutating func micPressEnded(now: Date) -> [KeyboardDictationEffect] {
@@ -586,8 +602,9 @@ struct KeyboardDictationMachine: Equatable {
         now: Date
     ) -> [KeyboardDictationEffect] {
         guard !isBusy else { return [] }
-        var effects: [KeyboardDictationEffect] = []
-        if case .waitingForApp = phase { effects.append(.stopAwaitingApp) }
+        // Choosing Insert last ends the wait, so a late handoff result can't
+        // be inserted on top of what the user just inserted.
+        var effects: [KeyboardDictationEffect] = isWaitingForApp ? [.stopAwaitingApp] : []
 
         guard let text, Self.hasContent(text) else {
             phase = .nothingToInsert(.noHistory, until: now + Self.nothingToInsertDisplayDuration)
@@ -716,6 +733,9 @@ struct KeyboardDictationMachine: Equatable {
 
         if !isVisible || Self.documentChanged(from: processing.documentID, to: document.identifier) {
             effects.append(.recordHistory(historyDraft(.notInserted, result: result, audio: audio, now: now)))
+            if hasText {
+                effects.append(.rememberForInsertLast(text: result.text, at: now))
+            }
             let message = hasText ? Self.fieldChangedMessage : Self.fieldChangedReturnMessage
             phase = .error(message: message, until: now + Self.errorDisplayDuration)
             effects.append(announcement)
@@ -731,8 +751,18 @@ struct KeyboardDictationMachine: Equatable {
         if result.pressEnter {
             effects.append(.insert("\n"))
         }
-        let status: HistoryEntry.Status = result.usedRawFallback ? .rawFallback : .inserted
+        // The same statuses as the pipeline's HistoryEntry.Status.forInsertion:
+        // return alone inserted no text.
+        let status: HistoryEntry.Status
+        if !hasText {
+            status = .nothingToInsert
+        } else {
+            status = result.usedRawFallback ? .rawFallback : .inserted
+        }
         effects.append(.recordHistory(historyDraft(status, result: result, audio: audio, now: now)))
+        if hasText {
+            effects.append(.rememberForInsertLast(text: result.text, at: now))
+        }
 
         let kind: InsertedKind
         if !hasText {
@@ -799,22 +829,37 @@ struct KeyboardDictationMachine: Equatable {
         if pending.pressEnter {
             effects.append(.insert("\n"))
         }
+        if hasText {
+            effects.append(.rememberForInsertLast(text: pending.text, at: now))
+        }
         phase = .inserted(hasText ? .handoff : .returnOnly, until: now + Self.insertedDisplayDuration)
         effects.append(announcement)
         return effects
     }
 
-    private mutating func handoffPending(sessionID: UUID, now: Date) -> [KeyboardDictationEffect] {
+    private mutating func handoffPending(
+        sessionID: UUID,
+        openedAt: Date?,
+        now: Date
+    ) -> [KeyboardDictationEffect] {
         switch phase {
         case .waitingForApp(let waitingSessionID, let since, _) where waitingSessionID == sessionID:
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
+            return []
         case .starting, .recording, .processing:
-            break
+            return []
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
              .waitingForApp:
-            phase = .waitingForApp(sessionID: sessionID, since: now, nextCheck: now + Self.handoffCheckInterval)
+            // Another keyboard process may have opened the app; count from
+            // then when known, and let go of sessions that have long ended.
+            let since = openedAt ?? now
+            guard now.timeIntervalSince(since) < Self.handoffWaitLimit else {
+                if isWaitingForApp { phase = restingPhase }
+                return [.stopAwaitingApp]
+            }
+            phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
+            return []
         }
-        return []
     }
 
     private mutating func tick(now: Date) -> [KeyboardDictationEffect] {

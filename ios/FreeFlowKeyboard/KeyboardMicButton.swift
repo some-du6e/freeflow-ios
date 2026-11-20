@@ -17,7 +17,8 @@ final class KeyboardMicButton: UIControl {
     override init(frame: CGRect) {
         super.init(frame: frame)
         isAccessibilityElement = true
-        accessibilityTraits = .button
+        // startsMediaSession keeps VoiceOver from speaking over the recording.
+        accessibilityTraits = [.button, .startsMediaSession]
         accessibilityIdentifier = KeyboardAccessibilityID.mic
         accessibilityLabel = KeyboardDictationDisplay.dictateLabel
         accessibilityHint = "Tap to start and stop, or touch and hold to talk."
@@ -74,10 +75,12 @@ final class KeyboardMicButton: UIControl {
             UIView.animate(
                 withDuration: 0.12,
                 delay: 0,
-                options: [.beginFromCurrentState, .allowUserInteraction]
-            ) {
-                self.transform = pressed ? CGAffineTransform(scaleX: 0.94, y: 0.94) : .identity
-            }
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: {
+                    self.transform = pressed ? CGAffineTransform(scaleX: 0.94, y: 0.94) : .identity
+                },
+                completion: nil
+            )
         }
     }
 
