@@ -109,6 +109,12 @@ jobs:
           ls -la "$app/PlugIns" || true
           echo "::endgroup::"
           if [ ! -d "$appex" ]; then
+            # Xcode signs the app only after embedding the keyboard, so an
+            # unsigned app means the build stopped early, not a project error.
+            if [ ! -f "$app/_CodeSignature/CodeResources" ]; then
+              echo "FreeFlow.app was not signed, so the build stopped before embedding the keyboard. See the Build and test step."
+              exit 0
+            fi
             echo "::error::FreeFlowKeyboard.appex is not embedded in FreeFlow.app/PlugIns"
             exit 1
           fi
