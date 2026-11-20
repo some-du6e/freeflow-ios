@@ -1,0 +1,233 @@
+name: iOS TestFlight
+
+# Builds the FreeFlow iOS app and keyboard for devices, signs them for App
+# Store Connect with cloud-managed signing, checks the signed entitlements,
+# and uploads the build to TestFlight for internal testing.
+# Setup and usage: ios/TESTFLIGHT.md.
+#
+# High risk (AGENTS.md): this workflow signs and uploads builds with an App
+# Store Connect API key. The key and its IDs are secrets of the `testflight`
+# environment, which should require a reviewer's approval for every run. The
+# upload job runs only when someone starts the workflow by hand, never for a
+# pull request or a push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run only. Archive with a placeholder team and check the entitlements, with no secrets and no upload.
+        type: boolean
+        default: false
+      build_number:
+        description: Build number (CFBundleVersion). Leave empty to use the workflow run number.
+        type: string
+        required: false
+        default: ""
+  # Registers the workflow with GitHub Actions and runs the dry run while the
+  # TestFlight work is in progress. A workflow file that isn't on the default
+  # branch can only be started with `gh workflow run` after it has run once.
+  push:
+    branches:
+      - ios-wip/testflight
+
+permissions:
+  contents: read
+
+jobs:
+  # Proves that a Release archive for devices builds and carries the right
+  # entitlements, with a made-up team and no secrets. The ad-hoc signature
+  # means no certificate, provisioning profile, or Apple account is involved.
+  dry-run:
+    name: Dry run (placeholder team, no secrets)
+    if: github.event_name == 'push' || inputs.dry_run
+    runs-on: macos-26
+    timeout-minutes: 30
+    concurrency:
+      group: ios-testflight-dry-run-${{ github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      TEAM_ID: ABCDE12345
+      BUNDLE_ID_PREFIX: dev.karim.freeflow
+      BUILD_NUMBER: ${{ github.run_number }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Archive with an ad-hoc signature
+        run: .github/scripts/ios-testflight-archive.sh "$RUNNER_TEMP/testflight" "$TEAM_ID" "$BUNDLE_ID_PREFIX" "$BUILD_NUMBER"
+
+      - name: Check the archive's identifiers and entitlements
+        run: |
+          .github/scripts/ios-testflight-verify.sh archive \
+            "$RUNNER_TEMP/testflight/FreeFlow.xcarchive/Products/Applications/FreeFlow.app" \
+            "$TEAM_ID" "$BUNDLE_ID_PREFIX" "$BUILD_NUMBER"
+
+      - name: Check the export options
+        run: .github/scripts/ios-testflight-export-options.sh "$RUNNER_TEMP/testflight/ExportOptions.plist" "$TEAM_ID"
+
+  testflight:
+    name: Archive, sign, and upload to TestFlight
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    runs-on: macos-26
+    timeout-minutes: 60
+    # Always "testflight" when this job runs. Push runs and dry runs skip the
+    # job, and the expression keeps them from naming the environment at all,
+    # because running a workflow that names a missing environment creates it.
+    environment: ${{ (github.event_name == 'workflow_dispatch' && !inputs.dry_run) && 'testflight' || '' }}
+    # One upload at a time, and never cancel one that has started.
+    concurrency:
+      group: ios-testflight-upload
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      BUNDLE_ID_PREFIX: ${{ vars.FREEFLOW_BUNDLE_ID_PREFIX }}
+
+    steps:
+      - name: Check the testflight environment's settings
+        env:
+          BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
+          RUN_NUMBER: ${{ github.run_number }}
+          HAS_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 != '' }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          missing=()
+          [ -n "$TEAM_ID" ] || missing+=("variable APPLE_TEAM_ID")
+          [ -n "$BUNDLE_ID_PREFIX" ] || missing+=("variable FREEFLOW_BUNDLE_ID_PREFIX")
+          [ "$HAS_KEY_P8" = true ] || missing+=("secret APP_STORE_CONNECT_API_KEY_P8")
+          [ -n "$ASC_KEY_ID" ] || missing+=("secret APP_STORE_CONNECT_KEY_ID")
+          [ -n "$ASC_ISSUER_ID" ] || missing+=("secret APP_STORE_CONNECT_ISSUER_ID")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for item in "${missing[@]}"; do
+              echo "::error title=Missing TestFlight setting::The testflight environment has no $item. See ios/TESTFLIGHT.md."
+            done
+            exit 1
+          fi
+
+          invalid=0
+          if [[ ! $TEAM_ID =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error::Variable APPLE_TEAM_ID must be the 10-character Team ID, got '$TEAM_ID'."
+            invalid=1
+          fi
+          if [[ ! $BUNDLE_ID_PREFIX =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+            echo "::error::Variable FREEFLOW_BUNDLE_ID_PREFIX must be a bundle ID such as dev.karim.freeflow, got '$BUNDLE_ID_PREFIX'."
+            invalid=1
+          fi
+          if [[ ! $ASC_KEY_ID =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error::Secret APP_STORE_CONNECT_KEY_ID must be the 10-character key ID."
+            invalid=1
+          fi
+          if [[ ! $ASC_ISSUER_ID =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+            echo "::error::Secret APP_STORE_CONNECT_ISSUER_ID must be the issuer ID, a UUID."
+            invalid=1
+          fi
+          build_number=${BUILD_NUMBER_INPUT:-$RUN_NUMBER}
+          if [[ ! $build_number =~ ^[0-9]{1,9}(\.[0-9]{1,9}){0,2}$ ]]; then
+            echo "::error::The build number must be one to three period-separated integers, got '$build_number'."
+            invalid=1
+          fi
+          [ "$invalid" -eq 0 ] || exit 1
+          echo "BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+          echo "Team $TEAM_ID, bundle ID prefix $BUNDLE_ID_PREFIX, build $build_number."
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Archive with an ad-hoc signature
+        run: .github/scripts/ios-testflight-archive.sh "$RUNNER_TEMP/testflight" "$TEAM_ID" "$BUNDLE_ID_PREFIX" "$BUILD_NUMBER"
+
+      - name: Check the archive's identifiers and entitlements
+        run: |
+          .github/scripts/ios-testflight-verify.sh archive \
+            "$RUNNER_TEMP/testflight/FreeFlow.xcarchive/Products/Applications/FreeFlow.app" \
+            "$TEAM_ID" "$BUNDLE_ID_PREFIX" "$BUILD_NUMBER"
+
+      - name: Write the export options
+        run: .github/scripts/ios-testflight-export-options.sh "$RUNNER_TEMP/testflight/ExportOptions.plist" "$TEAM_ID"
+
+      - name: Install the App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: .github/scripts/ios-testflight-install-key.sh
+
+      # Cloud-managed signing: Apple signs with the team's Apple Distribution
+      # certificate, and -allowProvisioningUpdates creates or refreshes the
+      # App Store profiles for the app and the keyboard. Both need an Admin
+      # API key, and neither puts a private signing key on the runner.
+      - name: Export and sign for App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/testflight/FreeFlow.xcarchive" \
+            -exportPath "$RUNNER_TEMP/testflight/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/testflight/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Check the signed IPA before upload
+        run: |
+          shopt -s nullglob
+          ipas=("$RUNNER_TEMP"/testflight/export/*.ipa)
+          if [ "${#ipas[@]}" -ne 1 ]; then
+            echo "::error::Expected one .ipa in the export folder, found ${#ipas[@]}."
+            ls -la "$RUNNER_TEMP/testflight/export" || true
+            exit 1
+          fi
+          echo "IPA_PATH=${ipas[0]}" >> "$GITHUB_ENV"
+          ditto -x -k "${ipas[0]}" "$RUNNER_TEMP/testflight/ipa"
+          .github/scripts/ios-testflight-verify.sh ipa \
+            "$RUNNER_TEMP/testflight/ipa/Payload/FreeFlow.app" \
+            "$TEAM_ID" "$BUNDLE_ID_PREFIX" "$BUILD_NUMBER"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          # altool finds AuthKey_<key ID>.p8 in API_PRIVATE_KEYS_DIR, or in
+          # ./private_keys relative to the working directory.
+          cd "$RUNNER_TEMP"
+          xcrun altool --upload-app --type ios --file "$IPA_PATH" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Summarize
+        run: |
+          version=$(plutil -extract CFBundleShortVersionString raw -o - "$RUNNER_TEMP/testflight/ipa/Payload/FreeFlow.app/Info.plist")
+          {
+            echo "### Uploaded FreeFlow $version ($BUILD_NUMBER) to App Store Connect"
+            echo
+            echo "Bundle ID \`$BUNDLE_ID_PREFIX\`, team \`$TEAM_ID\`, internal TestFlight testing only."
+            echo "App Store Connect processes the build before TestFlight offers it, usually within 30 minutes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the App Store Connect API key
+        if: always()
+        run: rm -rf "${RUNNER_TEMP:?}/private_keys"

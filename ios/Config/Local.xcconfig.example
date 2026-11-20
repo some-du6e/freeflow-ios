@@ -21,3 +21,6 @@ DEVELOPMENT_TEAM = YOUR_TEAM_ID
 //   App Group:             group.<prefix>
 //   keychain access group: <team ID>.<prefix>.shared
 FREEFLOW_BUNDLE_ID_PREFIX = com.example.freeflow
+
+// Don't set FREEFLOW_KEYCHAIN_GROUP_PREFIX here. Automatic signing fills it
+// in from your provisioning profile's team prefix.
