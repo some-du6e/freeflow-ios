@@ -32,8 +32,8 @@ enum PendingDictationPeek: Equatable {
     case stored(sessionID: UUID, createdAt: Date)
 }
 
-/// What `PendingDictationStore.take(sessionID:now:)` found for a session.
-/// A fresh or expired result is removed from the store either way.
+/// What `PendingDictationStore.result(for:now:)` found for a session. The
+/// result stays in the store until the keyboard uses it or lets it go.
 enum PendingDictationTake: Equatable {
     /// Young enough to insert.
     case fresh(PendingDictation)

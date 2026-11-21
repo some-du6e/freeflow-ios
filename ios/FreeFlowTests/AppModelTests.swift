@@ -385,14 +385,14 @@ final class AppModelTests: XCTestCase {
         let waiting = PendingDictation(sessionID: session, createdAt: now, text: "Synthetic handoff.", pressEnter: true)
         store.save(waiting)
         app.sceneBecameActive()
-        XCTAssertEqual(store.take(sessionID: session, now: now), .fresh(waiting))
+        XCTAssertEqual(store.result(for: session, now: now), .fresh(waiting))
 
         // An expired one loses its text, so the keyboard can still say it expired.
         store.awaitedSessionID = session
         store.save(PendingDictation(sessionID: session, createdAt: now.addingTimeInterval(-600), text: "Synthetic old.", pressEnter: true))
         app.sceneBecameActive()
         XCTAssertEqual(
-            store.take(sessionID: session, now: now),
+            store.result(for: session, now: now),
             .expired(PendingDictation(sessionID: session, createdAt: now.addingTimeInterval(-600), text: "", pressEnter: false))
         )
         XCTAssertEqual(store.awaitedSessionID, session, "The app never clears the keyboard's wait here")

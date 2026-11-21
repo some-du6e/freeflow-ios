@@ -7,9 +7,12 @@ import Foundation
 protocol KeyboardHandoffStore: AnyObject {
     /// The session the keyboard opened the app for, while it waits for it.
     var awaitedSessionID: UUID? { get set }
-    /// Removes and returns the result for `sessionID`: `.expired` once it is
-    /// older than `PendingDictation.maxAge`, `.none` if there is none yet.
-    func take(sessionID: UUID, now: Date) -> PendingDictationTake
+    /// The result for `sessionID`, without removing it: `.expired` once it
+    /// is older than `PendingDictation.maxAge`, `.none` if there is none yet.
+    /// The keyboard removes it when it uses it or lets it go
+    /// (`stopAwaiting`), so a keyboard process stopped in between loses
+    /// nothing. Another session's result is removed once stale.
+    func result(for sessionID: UUID, now: Date) -> PendingDictationTake
     /// The stored result's session and creation time, without its text and
     /// without removing it.
     func peekResult() -> PendingDictationPeek
@@ -50,10 +53,11 @@ struct KeyboardHandoffCheckReport: Equatable {
 /// the session when the machine stops waiting (`.stopAwaitingApp`). The
 /// controller only carries these out.
 ///
-/// Reads of the App Group can lag another process's writes, and a long-lived
-/// keyboard process has been seen to read "nothing awaited" for a session it
-/// had opened itself. So no decision here deletes a fresh result on the
-/// strength of a read that says nobody wants it.
+/// No decision here deletes a fresh result on the strength of a read that
+/// says nobody wants it, and the check itself never removes the result it
+/// hands over: in CI, iOS stopped a keyboard process right after an older,
+/// destructive check had taken a result, and the result was lost, leaving
+/// the next keyboard waiting for good.
 enum KeyboardHandoffCheck {
     /// The machine event for what the store holds now.
     /// - Nothing awaited: `.handoffAbsent`. No keyboard can insert a result
@@ -63,7 +67,8 @@ enum KeyboardHandoffCheck {
     ///   app's cleanup when it becomes active, a check after it expires, or
     ///   Clear History removes it otherwise.
     /// - A result for the awaited session, fresh or expired:
-    ///   `.handoffResultArrived`. The machine checks freshness, so an
+    ///   `.handoffResultArrived`, with the result left in the store until
+    ///   the machine lets go of it. The machine checks freshness, so an
     ///   expired result ends the wait with a message.
     /// - No result yet: `.handoffPending`, with when this keyboard opened
     ///   the app for the session, if it did.
@@ -99,7 +104,7 @@ enum KeyboardHandoffCheck {
             stored: stored,
             removedResult: false
         )
-        switch store.take(sessionID: sessionID, now: now) {
+        switch store.result(for: sessionID, now: now) {
         case .fresh(let pending):
             report.outcome = .arrived
             return (arrival(of: pending, sessionID: sessionID, ledger: ledger, document: document()), report)
@@ -107,28 +112,37 @@ enum KeyboardHandoffCheck {
             report.outcome = .expired
             return (arrival(of: pending, sessionID: sessionID, ledger: ledger, document: document()), report)
         case .none:
-            if case .stored(let otherSession, let createdAt) = peek, otherSession != sessionID,
-               !PendingDictation.isFresh(createdAt: createdAt, now: now) {
-                // `take` drops a stale result for another session.
+            // `result(for:now:)` drops another session's stale result and an
+            // unreadable one.
+            switch peek {
+            case .stored(let otherSession, let createdAt):
+                report.removedResult = otherSession != sessionID
+                    && !PendingDictation.isFresh(createdAt: createdAt, now: now)
+            case .unreadable:
                 report.removedResult = true
+            case .none:
+                break
             }
             return (.handoffPending(sessionID: sessionID, openedAt: ledger.openedAt(sessionID: sessionID)), report)
         }
     }
 
-    /// `.stopAwaitingApp`: this keyboard stops waiting, so the awaited
-    /// session is forgotten. A result for that session goes with it, since
-    /// nothing will insert it now. A result for any other session stays
-    /// while fresh: the read of what was awaited can be stale, and the app
-    /// may be writing that result for a keyboard that does still wait. A
-    /// stale or unreadable result goes either way. Returns whether a result
-    /// was removed.
+    /// `.stopAwaitingApp(sessionID:)`: this keyboard stops waiting for
+    /// `sessionID`, which the machine knows from its own wait, so nothing
+    /// here depends on reading back what is awaited. The store forgets the
+    /// session only if it still names it, since another keyboard process may
+    /// have opened FreeFlow for a newer one since. That session's result goes,
+    /// since nothing will insert it now, and so does any result no keyboard
+    /// could ever insert (expired or unreadable). Another session's fresh
+    /// result stays for the keyboard that awaits it. Returns whether a
+    /// result was removed.
     @discardableResult
-    static func stopAwaiting(_ store: KeyboardHandoffStore, now: Date) -> Bool {
-        let stopped = store.awaitedSessionID
-        store.awaitedSessionID = nil
+    static func stopAwaiting(_ store: KeyboardHandoffStore, sessionID: UUID, now: Date) -> Bool {
+        if store.awaitedSessionID == sessionID {
+            store.awaitedSessionID = nil
+        }
         let peek = store.peekResult()
-        if case .stored(let sessionID, _) = peek, sessionID == stopped {
+        if case .stored(let storedSession, _) = peek, storedSession == sessionID {
             store.discardResult()
             return true
         }

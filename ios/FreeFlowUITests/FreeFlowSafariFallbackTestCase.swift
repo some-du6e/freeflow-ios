@@ -18,12 +18,15 @@ import XCTest
 /// The round trip runs twice in each CI run: first in the UI bundle, with a
 /// fresh keyboard process (FreeFlowFallbackFromSafariTests), and last, after
 /// the other keyboard tests have kept one keyboard process alive for
-/// minutes (FreeFlowWarmKeyboardFallbackTests). Run last, a long-lived
-/// process lost FreeFlow's result in two CI runs: the keyboard Safari
-/// briefly showed on return read "nothing awaited", and the check then
-/// deleted the result.
-/// A check no longer deletes a fresh result on that read
-/// (KeyboardHandoffCheck), and both runs must now succeed. Running before
+/// minutes (FreeFlowWarmKeyboardFallbackTests). When Safari came back, briefly
+/// showed the keyboard and then dropped the address edit, the brief
+/// keyboard's check took FreeFlow's result out of the store, and iOS stopped
+/// that keyboard process before it could use it. The next keyboard found the
+/// session still awaited and nothing stored, and waited for good (CI,
+/// 2026-11-21, in either order). The check now leaves the result in the store
+/// until the keyboard uses it or lets it go (KeyboardHandoffCheck,
+/// KeyboardDictationMachine.handoffSessionID), and both runs must succeed.
+/// Running before
 /// FreeFlowKeyboardSetupTests, the first one repairs the keyboard's setup
 /// in Settings itself when CI's simulator preparation didn't take, as
 /// openFreeFlowKeyboard does.

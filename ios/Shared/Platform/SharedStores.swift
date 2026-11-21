@@ -116,14 +116,7 @@ final class PendingDictationStore {
     /// Setting nil removes it.
     var awaitedSessionID: UUID? {
         get {
-            let sessionID = defaults.string(forKey: Self.awaitedSessionKey).flatMap(UUID.init(uuidString:))
-            #if DEBUG
-            // Every read, with its time and process, to compare what each
-            // process sees against what was written.
-            let read = sessionID.map { KeyboardHandoffCheck.shortID($0) } ?? "none"
-            handoffLog.info("read the awaited session: \(read, privacy: .public)")
-            #endif
-            return sessionID
+            defaults.string(forKey: Self.awaitedSessionKey).flatMap(UUID.init(uuidString:))
         }
         set {
             if let newValue {
@@ -156,12 +149,14 @@ final class PendingDictationStore {
         return .stored(sessionID: pending.sessionID, createdAt: pending.createdAt)
     }
 
-    /// Removes and returns the result for `sessionID`: `.fresh`, or
+    /// The result for `sessionID`, without removing it: `.fresh`, or
     /// `.expired` once it is older than `PendingDictation.maxAge`, so the
-    /// keyboard can tell an expired result from one that hasn't arrived. A
-    /// result for another session is left alone while fresh and removed once
-    /// stale, so a `take` after `PendingDictation.maxAge` always drops it.
-    func take(sessionID: UUID, now: Date) -> PendingDictationTake {
+    /// keyboard can tell an expired result from one that hasn't arrived. The
+    /// keyboard removes it when it uses it or lets it go
+    /// (`KeyboardHandoffCheck.stopAwaiting`), so a keyboard process that iOS
+    /// stops in between loses nothing. A result for another session is left
+    /// alone while fresh and removed once stale.
+    func result(for sessionID: UUID, now: Date) -> PendingDictationTake {
         guard let pending = loadResult() else { return .none }
         guard pending.sessionID == sessionID else {
             if !pending.isFresh(now: now) {
@@ -169,19 +164,22 @@ final class PendingDictationStore {
             }
             return .none
         }
-        discardResult()
         let fresh = pending.isFresh(now: now)
         let state = fresh ? "fresh" : "expired"
         let session = KeyboardHandoffCheck.shortID(sessionID)
-        handoffLog.info("took the \(state, privacy: .public) result for \(session, privacy: .public)")
+        handoffLog.info("found the \(state, privacy: .public) result for \(session, privacy: .public)")
         return fresh ? .fresh(pending) : .expired(pending)
     }
 
-    /// Removes the pending result only. The awaited session stays.
+    /// Removes the pending result only. The awaited session stays. The
+    /// removal is written even when this process doesn't see a result, so a
+    /// result it hasn't read yet goes too.
     func discardResult() {
-        guard defaults.object(forKey: Self.pendingDictationKey) != nil else { return }
+        let hadResult = defaults.object(forKey: Self.pendingDictationKey) != nil
         defaults.removeObject(forKey: Self.pendingDictationKey)
-        handoffLog.info("stored result removed")
+        if hadResult {
+            handoffLog.info("stored result removed")
+        }
     }
 
     /// Clear History and Keep History off: removes the stored result, which

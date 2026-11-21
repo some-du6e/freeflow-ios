@@ -153,9 +153,10 @@ enum KeyboardDictationEffect: Equatable {
     case recordHistory(KeyboardDictationHistoryDraft)
     /// Mark `sessionID` as awaited and open `freeflow://dictate?session=`.
     case openApp(sessionID: UUID)
-    /// Stop waiting for the app: `KeyboardHandoffCheck.stopAwaiting` clears
-    /// the awaited session and any result the app left.
-    case stopAwaitingApp
+    /// Stop waiting for the app's result for `sessionID`:
+    /// `KeyboardHandoffCheck.stopAwaiting` forgets that session if the store
+    /// still names it, and removes that session's result.
+    case stopAwaitingApp(sessionID: UUID)
     /// Ask the store whether the app's result has arrived
     /// (`KeyboardHandoffCheck.check`).
     case checkForAppResult
@@ -342,8 +343,30 @@ struct KeyboardDictationMachine: Equatable {
     }
 
     var isWaitingForApp: Bool {
-        if case .waitingForApp = phase { return true }
-        return false
+        waitingSessionID != nil
+    }
+
+    /// The session this keyboard waits for, while it waits.
+    var waitingSessionID: UUID? {
+        if case .waitingForApp(let sessionID, _, _) = phase { return sessionID }
+        return nil
+    }
+
+    /// The handoff session this keyboard still has a use for in the store:
+    /// the one it waits for, or the one whose result it offers with Insert
+    /// from FreeFlow. An offered result stays in the store until it is used
+    /// or let go, so a keyboard process that iOS stops while offering it
+    /// doesn't lose it; the next keyboard finds it and offers it again.
+    var handoffSessionID: UUID? {
+        switch phase {
+        case .waitingForApp(let sessionID, _, _):
+            return sessionID
+        case .pendingInsert(let pending, _):
+            return pending.sessionID
+        case .idle, .setupNeeded, .starting, .recording, .processing, .inserted, .nothingToInsert, .error,
+             .fallbackAvailable:
+            return nil
+        }
     }
 
     /// When the controller should send `.tick` next, if ever.
@@ -380,8 +403,7 @@ struct KeyboardDictationMachine: Equatable {
             return setupChanged(newSetup)
         case .appeared:
             isVisible = true
-            expireMessage(now: now)
-            return []
+            return expireMessageLettingGoOfAnOffer(now: now)
         case .disappeared:
             return disappeared()
         case .micPressBegan(let documentID):
@@ -502,6 +524,20 @@ struct KeyboardDictationMachine: Equatable {
         }
     }
 
+    /// `expireMessage`, letting go of the store's copy of an Insert from
+    /// FreeFlow offer when the offer expires.
+    private mutating func expireMessageLettingGoOfAnOffer(now: Date) -> [KeyboardDictationEffect] {
+        guard case .pendingInsert(let pending, _) = phase else {
+            expireMessage(now: now)
+            return []
+        }
+        expireMessage(now: now)
+        if case .pendingInsert = phase {
+            return []
+        }
+        return [.stopAwaitingApp(sessionID: pending.sessionID)]
+    }
+
     private mutating func setupChanged(_ newSetup: KeyboardDictationSetup) -> [KeyboardDictationEffect] {
         setup = newSetup
         switch phase {
@@ -558,7 +594,7 @@ struct KeyboardDictationMachine: Equatable {
             return [announcement]
         }
 
-        let replacesHandoff = isWaitingForApp
+        let replacedHandoff = handoffSessionID
         attempt += 1
         phase = .starting(Recording(
             attempt: attempt,
@@ -567,7 +603,10 @@ struct KeyboardDictationMachine: Equatable {
             gesture: .pressing(since: now),
             documentID: documentID
         ))
-        return replacesHandoff ? [.stopAwaitingApp, .startCapture] : [.startCapture]
+        if let replacedHandoff {
+            return [.stopAwaitingApp(sessionID: replacedHandoff), .startCapture]
+        }
+        return [.startCapture]
     }
 
     private mutating func micPressEnded(now: Date) -> [KeyboardDictationEffect] {
@@ -609,13 +648,16 @@ struct KeyboardDictationMachine: Equatable {
                 return [.cancelPipeline, .deleteAudio(audio.fileURL)]
             }
             return [.cancelCapture]
-        case .waitingForApp:
+        case .waitingForApp(let sessionID, _, _):
             phase = restingPhase
-            return [.stopAwaitingApp]
-        case .fallbackAvailable, .inserted, .nothingToInsert, .error, .pendingInsert:
-            // Dismiss. A held handoff result was remembered for Insert last
-            // when it arrived, so Insert last can still add it, even with
-            // Keep History off.
+            return [.stopAwaitingApp(sessionID: sessionID)]
+        case .pendingInsert(let pending, _):
+            // Dismiss. The held result was remembered for Insert last when it
+            // arrived, so Insert last can still add it, even with Keep History
+            // off; the copy in the store goes.
+            phase = restingPhase
+            return [.stopAwaitingApp(sessionID: pending.sessionID)]
+        case .fallbackAvailable, .inserted, .nothingToInsert, .error:
             phase = restingPhase
             return []
         case .idle, .setupNeeded:
@@ -639,9 +681,9 @@ struct KeyboardDictationMachine: Equatable {
     }
 
     private mutating func appOpenFailed() -> [KeyboardDictationEffect] {
-        guard case .waitingForApp = phase else { return [] }
+        guard let sessionID = waitingSessionID else { return [] }
         phase = .fallbackAvailable(.openFailed)
-        return [.stopAwaitingApp, announcement]
+        return [.stopAwaitingApp(sessionID: sessionID), announcement]
     }
 
     private mutating func insertLast(
@@ -652,7 +694,7 @@ struct KeyboardDictationMachine: Equatable {
         guard !isBusy else { return [] }
         // Choosing Insert last ends the wait, so a late handoff result can't
         // be inserted on top of what the user just inserted.
-        var effects: [KeyboardDictationEffect] = isWaitingForApp ? [.stopAwaitingApp] : []
+        var effects: [KeyboardDictationEffect] = handoffSessionID.map { [.stopAwaitingApp(sessionID: $0)] } ?? []
 
         guard let text, Self.hasContent(text) else {
             phase = .nothingToInsert(.noHistory, until: now + Self.nothingToInsertDisplayDuration)
@@ -851,8 +893,10 @@ struct KeyboardDictationMachine: Equatable {
         now: Date
     ) -> [KeyboardDictationEffect] {
         guard !isBusy else { return [] }
-        // The result was taken from the store, so stop awaiting it either way.
-        var effects: [KeyboardDictationEffect] = [.stopAwaitingApp]
+        // The check reads the result without removing it, so a keyboard that
+        // iOS stops before it acts loses nothing. Every outcome but the offer
+        // below is final, so it lets go of the session and its result.
+        var effects: [KeyboardDictationEffect] = [.stopAwaitingApp(sessionID: pending.sessionID)]
         let hasText = Self.hasContent(pending.text)
 
         guard pending.isFresh(now: now) else {
@@ -884,11 +928,12 @@ struct KeyboardDictationMachine: Equatable {
         }
         // Hold the text for an explicit tap, so it never lands in a field the
         // user didn't dictate into. Remember it now: after Dismiss, expiry or
-        // a new dictation, Insert last can still add it.
-        effects.append(.rememberForInsertLast(text: pending.text, at: now))
+        // a new dictation, Insert last can still add it. The result stays in
+        // the store, still awaited, until the tap, Dismiss, a new dictation,
+        // Insert last or expiry lets it go, so a keyboard that iOS stops
+        // while offering it doesn't lose it.
         phase = .pendingInsert(pending, until: pending.createdAt + PendingDictation.maxAge)
-        effects.append(announcement)
-        return effects
+        return [.rememberForInsertLast(text: pending.text, at: now), announcement]
     }
 
     private mutating func insertPendingTapped(
@@ -896,13 +941,16 @@ struct KeyboardDictationMachine: Equatable {
         now: Date
     ) -> [KeyboardDictationEffect] {
         guard case .pendingInsert(let pending, _) = phase else { return [] }
+        let letGo = KeyboardDictationEffect.stopAwaitingApp(sessionID: pending.sessionID)
         guard pending.isFresh(now: now) else {
             phase = restingPhase
-            return []
+            return [letGo]
         }
         // The tap is the user's consent to insert the text into the current
-        // field, but not to press return in it.
-        return performHandoffInsertion(pending, pressEnter: false, document: document, now: now)
+        // field, but not to press return in it. The store's copy goes after
+        // the text is in, so a keyboard stopped in between offers it again
+        // rather than losing it.
+        return performHandoffInsertion(pending, pressEnter: false, document: document, now: now) + [letGo]
     }
 
     /// Inserts a handoff result and moves to `inserted`. `pressEnter` is
@@ -966,7 +1014,7 @@ struct KeyboardDictationMachine: Equatable {
             let since = openedAt ?? now
             guard now.timeIntervalSince(since) < Self.handoffWaitLimit else {
                 if isWaitingForApp { phase = restingPhase }
-                return [.stopAwaitingApp]
+                return [.stopAwaitingApp(sessionID: sessionID)]
             }
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
             return []
@@ -995,12 +1043,11 @@ struct KeyboardDictationMachine: Equatable {
             phase = .error(message: Self.stopTimedOutMessage, until: now + Self.errorDisplayDuration)
             return [.cancelCapture, announcement]
         case .inserted, .nothingToInsert, .error, .pendingInsert:
-            expireMessage(now: now)
-            return []
+            return expireMessageLettingGoOfAnOffer(now: now)
         case .waitingForApp(let sessionID, let since, let nextCheck):
             if now.timeIntervalSince(since) >= Self.handoffWaitLimit {
                 phase = restingPhase
-                return [.stopAwaitingApp]
+                return [.stopAwaitingApp(sessionID: sessionID)]
             }
             guard isVisible, now >= nextCheck else { return [] }
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
