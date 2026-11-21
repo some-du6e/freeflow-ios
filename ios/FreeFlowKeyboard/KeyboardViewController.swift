@@ -587,14 +587,16 @@ final class KeyboardViewController: UIInputViewController {
 
     /// Tells the machine, from the store alone and without reading the
     /// field, about a session FreeFlow is recording for, while the keyboard
-    /// appears. A mic press or Insert last while it slides in then ends that
-    /// wait as usual, and a waiting machine's next check moves past
-    /// viewDidAppear, where `checkForAppResult()` reads the field for a
-    /// result that has arrived.
+    /// appears (`KeyboardHandoffCheck.appearanceEvent`). A mic press or
+    /// Insert last while it slides in then ends that wait as usual, and a
+    /// waiting machine's next check moves past viewDidAppear, where
+    /// `checkForAppResult()` reads the field for a result that has arrived.
     private func noteAwaitedSession() {
         guard hasFullAccess, !machine.isBusy,
-              let sessionID = PendingDictationStore.shared.awaitedSessionID else { return }
-        send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
+              let event = KeyboardHandoffCheck.appearanceEvent(PendingDictationStore.shared, ledger: handoffLedger) else {
+            return
+        }
+        send(event)
     }
 
     /// Picks up a result the app recorded for this keyboard, if one is

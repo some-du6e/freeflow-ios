@@ -131,6 +131,24 @@ enum KeyboardHandoffCheck {
         }
     }
 
+    /// What the keyboard tells the machine as it appears, from the store
+    /// alone and without reading the field (the check reads it once the
+    /// keyboard is up): the session FreeFlow is recording for, if any, so a
+    /// mic press or Insert last while the keyboard slides in ends that wait
+    /// as usual. With nothing stored yet, the open time comes along, so a
+    /// session that ended long ago is let go of. With the session's result
+    /// already stored, it doesn't: the machine would let go of a session
+    /// opened more than `handoffWaitLimit` ago, and with it the result,
+    /// which is fresh until `PendingDictation.maxAge` after FreeFlow saved
+    /// it, before the check could deliver it.
+    static func appearanceEvent(_ store: KeyboardHandoffStore, ledger: KeyboardHandoffLedger) -> KeyboardDictationEvent? {
+        guard let sessionID = store.awaitedSessionID else { return nil }
+        if case .stored(let storedSession, _) = store.peekResult(), storedSession == sessionID {
+            return .handoffPending(sessionID: sessionID, openedAt: nil)
+        }
+        return .handoffPending(sessionID: sessionID, openedAt: ledger.openedAt(sessionID: sessionID))
+    }
+
     /// `.stopAwaitingApp(sessionID:)`: this keyboard stops waiting for
     /// `sessionID`, which the machine knows from its own wait, so nothing
     /// here depends on reading back what is awaited. The store forgets the

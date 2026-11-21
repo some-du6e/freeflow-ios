@@ -55,6 +55,7 @@ enum IOSKeyboardCoreTests {
         testHandoffLedger()
         testReopeningFromAnotherFieldNeverAutoInserts()
         testHandoffCheckReadsTheStore()
+        testAppearanceNotesTheAwaitedSession()
         testDisappearingCancelsCapture()
         testHapticsNeedFullAccess()
         testDisplayForEveryPhase()
@@ -1577,6 +1578,57 @@ enum IOSKeyboardCoreTests {
             TestSupport.expectEqual(insertions(effects), [])
             TestSupport.expectEqual(status(machine), .pendingInsert)
         }
+    }
+
+    private static func testAppearanceNotesTheAwaitedSession() {
+        let suite = "FreeFlowTests.IOSKeyboardCore.appearance.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            TestSupport.expect(false, "A test defaults suite must open")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let ledger = KeyboardHandoffLedger(defaults: defaults)
+        ledger.recordOpen(sessionID: sessionOne, documentID: fieldA, at: at(0))
+        let late = at(0) + KeyboardDictationMachine.handoffWaitLimit + 100
+
+        // Nothing awaited: nothing to note.
+        let idleStore = SyntheticHandoffStore(awaited: nil, take: PendingDictationTake.none)
+        TestSupport.expect(KeyboardHandoffCheck.appearanceEvent(idleStore, ledger: ledger) == nil, "Nothing awaited, nothing noted")
+
+        // Awaited with nothing stored: the open time comes along, so a
+        // session that ended long ago is let go of as the keyboard appears.
+        let waiting = SyntheticHandoffStore(awaited: sessionOne, take: PendingDictationTake.none)
+        TestSupport.expectEqual(
+            KeyboardHandoffCheck.appearanceEvent(waiting, ledger: ledger),
+            .handoffPending(sessionID: sessionOne, openedAt: at(0))
+        )
+
+        // A long dictation: FreeFlow was opened longer than the wait limit
+        // ago, and its result, saved 20 s ago, is fresh. Noting the session
+        // without its open time keeps the result for the check to deliver.
+        // With the open time, the machine would have let go of the session
+        // and, with it, the result.
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: late - 20, text: "Long dictation.", pressEnter: false)
+        let arrived = SyntheticHandoffStore(awaited: sessionOne, take: .fresh(pending))
+        guard let event = KeyboardHandoffCheck.appearanceEvent(arrived, ledger: ledger) else {
+            TestSupport.expect(false, "An awaited session with its result is noted")
+            return
+        }
+        TestSupport.expectEqual(event, .handoffPending(sessionID: sessionOne, openedAt: nil))
+        var machine = readyMachine()
+        TestSupport.expectEqual(machine.handle(event, now: late), [])
+        TestSupport.expectEqual(status(machine), .waitingForApp)
+        let checked = KeyboardHandoffCheck.check(arrived, ledger: ledger, now: late, document: document(fieldB))
+        let effects = machine.handle(checked, now: late)
+        TestSupport.expectEqual(status(machine), .pendingInsert)
+        TestSupport.expect(!effects.contains(.stopAwaitingApp(sessionID: sessionOne)), "The offer keeps the result")
+        TestSupport.expectEqual(arrived.discards, 0)
+
+        var withTheOpenTime = readyMachine()
+        TestSupport.expectEqual(
+            withTheOpenTime.handle(.handoffPending(sessionID: sessionOne, openedAt: at(0)), now: late),
+            [.stopAwaitingApp(sessionID: sessionOne)]
+        )
     }
 
     private static func testHandoffCheckReadsTheStore() {

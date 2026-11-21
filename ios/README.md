@@ -60,7 +60,8 @@ The fallback works like this:
   tell you're in the field you opened FreeFlow from. Otherwise it offers a
   one-tap "Insert from FreeFlow", which never presses return. That includes
   the first field if you opened FreeFlow again from another field for the
-  same dictation.
+  same dictation. A dictation that was only "press enter" isn't offered: the
+  keyboard presses return only in the same field.
 
 ## Requirements
 
@@ -170,8 +171,9 @@ What stays on the phone:
   turned off or cleared in Settings.
 - **Fallback results:** text recorded in the app for the keyboard waits in
   the App Group until one of these happens:
-  - the keyboard inserts it, or you dismiss it, dictate again, or hide the
-    keyboard after it has offered the text for a couple of seconds;
+  - the keyboard inserts it, or you dismiss it, dictate again, use Insert
+    last, or hide the keyboard after it has offered the text for a couple of
+    seconds;
   - you clear or turn off history;
   - it expires (3 minutes) and the keyboard next appears or FreeFlow next
     opens.
@@ -183,7 +185,8 @@ What stays on the phone:
 - **Recordings:** deleted after transcription. After a failed upload the app
   keeps the file so you can try again, until you close the recorder.
 
-Logs record only states, counts and durations. They never contain
+Logs record only states, counts, durations and the first 8 characters of
+the random IDs that tie a keyboard handoff together. They never contain
 transcripts, audio, keys or URLs.
 
 ## Limitations and risks
