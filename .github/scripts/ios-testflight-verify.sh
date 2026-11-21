@@ -74,7 +74,9 @@ echo "::group::Nested code in $(basename "$app")"
 (cd "$app" && find . \( -name '*.appex' -o -name '*.framework' -o -name '*.dylib' \) -print | LC_ALL=C sort)
 echo "::endgroup::"
 
-python3 - "$mode" "$work" "$app" "$team_id" "$bundle_id_prefix" "$build_number" <<'PY'
+# -I keeps the working directory, a checkout of the branch, off sys.path, so
+# a plistlib.py or fnmatch.py in the repository can't replace the real ones.
+python3 -I - "$mode" "$work" "$app" "$team_id" "$bundle_id_prefix" "$build_number" <<'PY'
 import fnmatch
 import os
 import plistlib

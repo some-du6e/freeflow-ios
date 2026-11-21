@@ -14,6 +14,21 @@ Checked against Apple's and GitHub's documentation on 2026-11-20. Apple
 renames buttons now and then. When a label here doesn't match, the linked
 Apple page has the current one.
 
+## How it works
+
+Each run has two jobs.
+
+1. Archive builds the app and keyboard for devices in Release, with an ad-hoc
+   signature, and checks the result. It has no access to the API key, so the
+   branch's build, including any Run Script phase or build setting, can't
+   reach the key.
+2. Sign and upload waits for your approval, then downloads that archive,
+   checks it again, signs it with your team's cloud-managed Apple
+   Distribution certificate, checks the signed app, and uploads it. It runs
+   nothing from the branch except the workflow, the
+   `.github/scripts/ios-testflight-*.sh` scripts and
+   `ios/Config/ExportOptions-TestFlight.plist`.
+
 ## Identifiers
 
 | What | Value |
@@ -39,7 +54,7 @@ You need:
 ## One-time setup
 
 Do these in order. Profiles made before the App Group is assigned stop
-working when you assign it.
+working when you assign it, and the workflow can't run before step 5.
 
 ### 1. Register the App Group
 
@@ -80,9 +95,9 @@ Store profiles allow every keychain group that starts with your Team ID, so
 `<TEAM ID>.dev.karim.freeflow.shared` needs nothing here. The workflow's IPA
 check confirms that each profile allows it.
 
-The workflow can't do this step. The App Store Connect API can create bundle
-IDs and turn on the App Groups capability, but it has no way to create an App
-Group or assign one to an App ID.
+The workflow can't do this step. The export may create provisioning profiles,
+but it never registers App IDs or changes their capabilities, and the App
+Store Connect API has no way to create an App Group or assign one.
 
 ### 3. Create the app record
 
@@ -104,7 +119,7 @@ latest agreement. If it asks, accept it under Business first.
    - User Access: Full Access.
 4. Click Create.
 
-The API can't create app records, so the first upload fails until this exists.
+The API can't create app records, so uploads fail until this exists.
 
 ### 4. Create a Team API key
 
@@ -117,7 +132,8 @@ The API can't create app records, so the first upload fails until this exists.
    the add button (+) instead.
 4. Name: `GitHub TestFlight`. Access: Admin. Click Generate.
 5. Click Download API Key next to the new key. You get `AuthKey_<KEY ID>.p8`,
-   and Apple lets you download it only once.
+   and Apple lets you download it only once. Leave it in your Downloads
+   folder for now, outside any clone of the repository.
 6. Copy the Issuer ID near the top of the page, and the Key ID from the key's
    row.
 
@@ -142,20 +158,23 @@ The trade is a long-lived signing key on CI instead of a powerful API key,
 plus a certificate to renew every year and profiles to rebuild whenever an
 App ID changes. This workflow doesn't implement that mode.
 
-### 5. Create the GitHub environment
+### 5. Set up the GitHub environment and variables
 
-The upload job can read the key only inside an environment named
-`testflight`.
+Don't start a real run before this step. A run that names a missing
+environment makes GitHub create it with no protection. If `testflight`
+already exists, check its rules in step 3 below before you add any secret.
 
 1. On GitHub, open the repository's Settings, then Environments, then New
    environment.
 2. Name it `testflight` and click Configure environment.
 3. Select Required reviewers and add yourself. Leave Prevent self-review
-   unchecked, or you can't approve your own runs.
+   unchecked, or you can't approve your own runs. Click Save protection
+   rules, and check that the page now lists you as a required reviewer.
 4. Under Deployment branches and tags, choose Selected branches and tags. Add
-   a rule for each branch you will upload from, such as `ios-port` and
-   `main`, or `ios-wip/testflight` for a first test.
-5. Add three environment secrets:
+   a rule with the exact name of each branch you will upload from, such as
+   `main`. See [Security](#security) before you allow a branch that agents
+   push to.
+5. Under Environment secrets, add these three:
 
    | Secret | Value |
    |---|---|
@@ -163,26 +182,37 @@ The upload job can read the key only inside an environment named
    | `APP_STORE_CONNECT_KEY_ID` | The Key ID, 10 characters. |
    | `APP_STORE_CONNECT_ISSUER_ID` | The Issuer ID, a UUID. |
 
-6. Add two environment variables:
+6. Open Settings, then Secrets and variables, then Actions, then the
+   Variables tab. Add these as repository variables, not environment
+   variables, because the archive job has no environment:
 
    | Variable | Value |
    |---|---|
    | `APPLE_TEAM_ID` | Your Team ID. |
    | `FREEFLOW_BUNDLE_ID_PREFIX` | `dev.karim.freeflow` |
+   | `FREEFLOW_BUILD_NUMBER_OFFSET` | Optional. See [Build numbers](#build-numbers). |
 
-Put them in the environment, not under the repository's Actions secrets.
-The workflow reads them only there. With the GitHub CLI, after steps 1 to 4:
+Keep the three secrets in the environment only. GitHub hands repository
+secrets to every workflow on every branch, without approval, and a job in
+the environment would read a repository copy without complaint. So the
+workflow stops if it can see any of them as a repository secret.
+
+The same with the GitHub CLI, once steps 1 to 4 of this list are done. The
+environment must exist before `gh secret set --env` can write to it.
 
 ```sh
-gh secret set APP_STORE_CONNECT_API_KEY_P8 --env testflight < AuthKey_XXXXXXXXXX.p8
-gh secret set APP_STORE_CONNECT_KEY_ID --env testflight --body XXXXXXXXXX
-gh secret set APP_STORE_CONNECT_ISSUER_ID --env testflight --body 00000000-0000-0000-0000-000000000000
-gh variable set APPLE_TEAM_ID --env testflight --body XXXXXXXXXX
-gh variable set FREEFLOW_BUNDLE_ID_PREFIX --env testflight --body dev.karim.freeflow
+gh secret set APP_STORE_CONNECT_API_KEY_P8 --repo some-du6e/freeflow-ios --env testflight < ~/Downloads/AuthKey_<KEY ID>.p8
+gh secret set APP_STORE_CONNECT_KEY_ID --repo some-du6e/freeflow-ios --env testflight --body '<KEY ID>'
+gh secret set APP_STORE_CONNECT_ISSUER_ID --repo some-du6e/freeflow-ios --env testflight --body '<ISSUER ID>'
+gh variable set APPLE_TEAM_ID --repo some-du6e/freeflow-ios --body '<TEAM ID>'
+gh variable set FREEFLOW_BUNDLE_ID_PREFIX --repo some-du6e/freeflow-ios --body dev.karim.freeflow
 ```
 
+Don't paste the `.p8` at gh's interactive prompt. It reads one line only.
+
 Once the secret is saved, keep the `.p8` in a password manager or delete it.
-GitHub never shows secret values again.
+GitHub never shows secret values again. Never copy it into a clone of this
+repository, which is public.
 
 ### 6. Set up internal testing
 
@@ -215,24 +245,29 @@ and undoing that means removing and re-inviting yourself.
 1. Start the workflow on the branch to build:
 
    ```sh
-   gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref ios-port
+   gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref <branch>
    ```
 
-   The Actions tab shows a Run workflow button only for workflows on the
-   default branch. Until this file reaches `main`, start it with `gh`.
+   The branch must contain this workflow and be one of the environment's
+   deployment branches. The Actions tab shows a Run workflow button only for
+   workflow files on the default branch, so until this one reaches `main`,
+   start it with `gh`. Don't delete all of this workflow's runs before then:
+   GitHub may forget the workflow, and `gh` then answers that it isn't on the
+   default branch.
 
-2. Open the run under Actions, then iOS TestFlight. It waits for you: click
-   Review deployments, select `testflight`, and click Approve and deploy.
-3. The job archives, signs, checks and uploads the build, in about 5 to 15
-   minutes plus any wait for a free macOS runner.
+2. The Archive job runs first, in a few minutes, plus any wait for a free
+   macOS runner. Then the run page shows a review request. Click Review
+   deployments, select `testflight`, and click Approve and deploy. A run
+   that nobody approves fails after 30 days.
+3. The signing job then signs, checks and uploads the build.
 4. App Store Connect then processes the build. Apple emails you when
    processing starts and when it completes or fails. Apple gives no typical
    time and says a build still processing after 24 hours has a problem. The
    TestFlight tab's Build Uploads list shows the status.
 5. On the first upload, check that the build shows the Internal marker under
-   its build number. That marker is what stops it from going to external
-   testers or App Review. If it's missing, expire the build in TestFlight and
-   tell whoever maintains this workflow.
+   its build number. That marker is what keeps it away from external testers
+   and App Review. If it's missing, expire the build in TestFlight and tell
+   whoever maintains this workflow.
 6. On the iPhone, open TestFlight and tap Install, or Update for later builds.
 7. The first time, open FreeFlow and finish its setup, including the
    microphone permission. Then add the keyboard in Settings, General,
@@ -241,46 +276,62 @@ and undoing that means removing and re-inviting yourself.
 
 TestFlight builds expire 90 days after upload.
 
-Build numbers. Each upload of a version needs a higher build number than the
-last. The workflow uses the run number, and a re-run of the same run gets
-`<run>.<attempt>`, such as `7.2`. To set it yourself, for example after an
-upload from Xcode used a bigger number:
+### Build numbers
 
-```sh
-gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref ios-port -f build_number=500
-```
+Each upload of a version needs a higher build number than the last one. The
+workflow uses its run number plus `FREEFLOW_BUILD_NUMBER_OFFSET`, which
+defaults to 0. A re-run of the same run gets `<number>.<attempt>`, such as
+`7.2`, which sorts between 7 and 8.
+
+If App Store Connect says the build number must be higher, for example after
+an upload from Xcode used a bigger number, set `FREEFLOW_BUILD_NUMBER_OFFSET`
+to that number. Every later run builds above it. An upload that failed
+doesn't use up its number.
 
 The version string, now 0.1.0, is `MARKETING_VERSION` in
-`ios/Config/FreeFlow.xcconfig`. An upload that failed doesn't use up its
-build number.
+`ios/Config/FreeFlow.xcconfig`. Build numbers may start over when it goes up.
 
 ### Dry run
 
 ```sh
-gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref ios-port -f dry_run=true
+gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref <branch> -f dry_run=true
 ```
 
-A dry run archives with a made-up team, `ABCDE12345`, and checks the archive.
-It uses no secrets and no environment, so it needs no approval and uploads
-nothing. It finds Release-only compile errors and broken entitlements before
-you spend an approval.
+A dry run archives with a made-up team, `ABCDE12345`, checks the archive,
+passes it to the signing job, and checks it again there. It uses no secrets
+and no environment, so it needs no approval and uploads nothing. It catches
+Release-only compile errors and broken entitlements before you spend an
+approval, and it works before any of the setup above.
 
 ## What the workflow checks
 
-The upload step runs only after every check before it passes.
+Each job stops at the first failed step, and the upload runs only after every
+check before it passes.
 
-| Step | Fails when |
-|---|---|
-| Check the testflight environment's settings | A secret or variable is missing or malformed. The error names it. |
-| Archive with an ad-hoc signature | Release doesn't compile for a device. Warnings count as errors. |
-| Check the archive's identifiers and entitlements | A bundle ID, the build number, the App Group or the keychain group is wrong in an Info.plist or in the signature, or `FAKETEAMID` appears. |
-| Write the export options | `ios/Config/ExportOptions-TestFlight.plist` no longer describes an internal-only App Store Connect export. |
-| Install the App Store Connect API key | The `.p8` secret isn't a readable private key. |
-| Export and sign for App Store Connect | Apple refused to sign or couldn't make the profiles. See [Troubleshooting](#troubleshooting). |
-| Check the signed IPA before upload | The App Store signature lacks something iOS needs, listed below. |
-| Upload to TestFlight | App Store Connect rejected the upload. |
+| Job | Step | Fails when |
+|---|---|---|
+| Archive | Check the settings | An App Store Connect secret exists at repository level, a variable is missing or malformed, or `FREEFLOW_BUILD_NUMBER_OFFSET` isn't a whole number. The error names the value. |
+| Archive | Archive with an ad-hoc signature | Release doesn't compile for a device. Warnings count as errors. |
+| Archive | Check the archive's identifiers and entitlements | See the list below. |
+| Sign and upload | Check the testflight environment's settings | A secret is missing or malformed, or the environment sets one of the variables to a different value. |
+| Sign and upload | Unpack the archive | The downloaded archive differs from the one the archive job packed. |
+| Sign and upload | Check the archive's identifiers and entitlements | The same checks again, on the archive as received. |
+| Sign and upload | Write the export options | `ios/Config/ExportOptions-TestFlight.plist` no longer describes an internal-only App Store Connect export. |
+| Sign and upload | Install the App Store Connect API key | The `.p8` secret isn't a readable private key. |
+| Sign and upload | Export and sign for App Store Connect | Apple rejected the key, refused to sign, or couldn't make the profiles. See [Troubleshooting](#troubleshooting). |
+| Sign and upload | Check the signed IPA before upload | The App Store signature lacks something iOS needs, listed below. |
+| Sign and upload | Upload to TestFlight | altool reports a failed upload, even when it exits with status 0. |
 
-The IPA check covers both the app and the keyboard:
+The archive checks cover both the app and the keyboard:
+
+- The bundle IDs are `dev.karim.freeflow` and `dev.karim.freeflow.keyboard`,
+  both bundles have the run's build number, and their version strings match.
+- The Info.plists and the signature carry `group.dev.karim.freeflow` and
+  `<TEAM ID>.dev.karim.freeflow.shared`, with no `FAKETEAMID`.
+- The app declares `ITSAppUsesNonExemptEncryption` as false, and the keyboard
+  is a keyboard extension.
+
+The IPA check adds, for both bundles:
 
 - `com.apple.security.application-groups` contains `group.dev.karim.freeflow`.
   Without it, the keyboard can't read the app's settings and history.
@@ -290,8 +341,7 @@ The IPA check covers both the app and the keyboard:
   supplies a team prefix, and no iPhone grants a keychain group built from
   it.
 - `get-task-allow` is false. App Store Connect rejects debuggable builds.
-- The bundle IDs are `dev.karim.freeflow` and `dev.karim.freeflow.keyboard`,
-  the application identifiers are `<TEAM ID>.<bundle ID>`, and the signature
+- The application identifiers are `<TEAM ID>.<bundle ID>`, and the signature
   and profiles belong to your team.
 - Each bundle embeds an App Store profile, one without a device list, that
   allows the App Group and the keychain group. iOS refuses to install an app
@@ -300,21 +350,28 @@ The IPA check covers both the app and the keyboard:
 The archive gets an ad-hoc signature, so CI never creates an Apple
 Development certificate on your account. Automatic signing on a fresh runner
 makes a new one every run, and teams have hit Apple's certificate limit that
-way. The export re-signs the archive with the cloud-managed distribution
-certificate.
+way.
 
 ## Troubleshooting
 
-"The testflight environment has no ...". The secret or variable is missing,
-misspelled, or saved under the repository's Actions secrets instead of the
-`testflight` environment.
+"App Store Connect secret at repository level". One of the three secrets
+also exists under the repository's Actions secrets. Delete that copy and keep
+the one in the environment.
 
-The upload job fails before asking for approval, with an error that the
+"Set the repository variable ...", or "The testflight environment has no
+secret ...". The value is missing or misspelled, or it sits at the wrong
+level. Secrets go in the environment, variables in the repository.
+
+The signing job fails before asking for approval, with an error that the
 branch may not deploy to `testflight`. Add the branch to the environment's
 deployment branches, or run from a branch that is listed.
 
 "Cloud signing permission error" during export. The API key isn't an Admin
 key. Generate an Admin key and replace the three secrets.
+
+An export or upload error about authentication, or HTTP 401. The Key ID,
+Issuer ID and `.p8` secrets don't belong together, or the key was revoked.
+The export checks the key first, so this usually shows up there.
 
 An export error that no profile matches `dev.karim.freeflow`, or that the
 profile lacks the App Groups capability or the
@@ -325,23 +382,27 @@ assigned. Fix step 2 and run again. The export makes fresh profiles.
 "the embedded profile does not allow 'group.dev.karim.freeflow'". The same
 cause, for the bundle the message names.
 
+An export error that no "iOS Distribution" or "Apple Distribution"
+certificate was found, with an Admin key and both App IDs set up. Xcode took
+the manual-signing path for the ad-hoc archive. Tell whoever maintains the
+workflow, since `.github/scripts/ios-testflight-archive.sh` then has to stop
+passing `CODE_SIGN_STYLE=Manual`.
+
 "PLA Update available" or a similar agreement error. Apple updated the
 Program License Agreement. Accept it at <https://developer.apple.com/account>
 and run again.
 
-An upload error that no suitable application record was found. The app
-record from step 3 is missing, or its bundle ID differs from
-`FREEFLOW_BUNDLE_ID_PREFIX`.
+An upload error that no app record matches, or that the Apple ID can't be
+found from the bundle ID. The app record from step 3 is missing, or its
+bundle ID differs from `FREEFLOW_BUNDLE_ID_PREFIX`.
 
 "The bundle version must be higher than the previously uploaded version".
-Start a new run, or pass a larger `build_number`.
+Set `FREEFLOW_BUILD_NUMBER_OFFSET` to the number in the message and run
+again.
 
-An upload error about authentication, or HTTP 401. The Key ID, Issuer ID and
-`.p8` secrets don't belong together, or the key was revoked.
-
-The build says Missing Compliance in TestFlight. The app's Info.plist lost
-`ITSAppUsesNonExemptEncryption`. Answer the export compliance question on the
-build page this once, and restore the key.
+A build uploaded from Xcode says Missing Compliance. CI builds can't, because
+the archive check requires `ITSAppUsesNonExemptEncryption`. Answer the
+export compliance question on the build page.
 
 The build processed but never reached your group. Add it with the group's
 Add Builds button, and check that automatic distribution is on.
@@ -359,10 +420,13 @@ is down. You can't attach a debugger to a TestFlight build.
 1. Install Xcode 26.6 or later. If the iPhone runs iOS 27, use Xcode 27.
 2. In Xcode, open Settings, then Accounts, and add your Apple Account.
 3. Copy `ios/Config/Local.xcconfig.example` to `ios/Config/Local.xcconfig`,
-   which git ignores. Set `DEVELOPMENT_TEAM` to your Team ID and
-   `FREEFLOW_BUNDLE_ID_PREFIX` to the prefix to build. Leave
-   `FREEFLOW_KEYCHAIN_GROUP_PREFIX` unset, since Xcode fills it in from your
-   profile.
+   which git ignores. Set `DEVELOPMENT_TEAM` to your Team ID. Set
+   `FREEFLOW_BUNDLE_ID_PREFIX` to `dev.karim.freeflow.debug` to keep the
+   TestFlight install, or to `dev.karim.freeflow` to replace it. Signed in
+   with your Apple Account, Xcode registers the `.debug` App IDs and App
+   Group itself, and both keyboards are called FreeFlow in the keyboard list.
+   Leave `FREEFLOW_KEYCHAIN_GROUP_PREFIX` unset, since Xcode fills it in from
+   your profile.
 4. Open `ios/FreeFlow.xcodeproj`, choose the FreeFlow scheme and your iPhone,
    and click Run. The first time, the iPhone asks you to turn on Developer
    Mode in Settings, then Privacy & Security, and restarts.
@@ -371,43 +435,51 @@ Don't choose a team in the Signing & Capabilities editor. Xcode writes it
 into `project.pbxproj`, where it overrides `Local.xcconfig` and ends up in
 commits.
 
-A build from Xcode with `dev.karim.freeflow` replaces the TestFlight install.
-To keep both, use another prefix such as `dev.karim.freeflow.debug`. Signed
-in with your Apple Account, Xcode registers that prefix's App IDs and App
-Group itself. Both keyboards are called FreeFlow in the keyboard list.
-
-To upload from the Mac, choose Product, then Archive, then Distribute App,
-then TestFlight Internal Only. CI uploads after that need a build number
-higher than the one Xcode used.
+To upload from the Mac, first set `FREEFLOW_BUNDLE_ID_PREFIX` back to
+`dev.karim.freeflow`, the prefix with an app record. Then choose Product,
+then Archive, then Distribute App, then TestFlight Internal Only. Afterwards,
+set `FREEFLOW_BUILD_NUMBER_OFFSET` so that CI builds number above the one
+Xcode used.
 
 ## Keeping it working
 
 - From April 2027, App Store Connect accepts only builds made with the iOS 27
-  SDK. Before then, move the workflow from Xcode 26.6 to Xcode 27, and make
-  sure the iPhone's iOS can run the result.
+  SDK. Before then, move the workflow from Xcode 26.6 to Xcode 27. The
+  deployment target stays iOS 17.
 - The archive compiles in Release, which the simulator job in `ios.yml`
   doesn't. A dry run catches Release-only errors before an approval.
-- Revoking the API key, or a lapsed membership, breaks the export and the
-  upload until the secrets are updated.
+- A revoked API key breaks the export and the upload until the secrets hold a
+  new key. A lapsed membership breaks them until you renew it.
 
 ## Security
 
 - The API key, its Key ID and the Issuer ID live only in the `testflight`
-  environment. Only the upload job reads them, and only after you approve the
-  run. Pull requests, including ones from forks, never get them.
-- Approving a run hands the key to the workflow and scripts on that branch.
-  Before you approve a run on a branch you didn't write, read what changed in
-  `.github/workflows/ios-testflight.yml` and `.github/scripts/ios-testflight-*.sh`.
-- The repository is public, so its Actions logs are public. The workflow
-  prints bundle IDs, your Team ID and entitlements, never names, keys or
-  certificates. GitHub masks secret values in logs.
+  environment. Only the signing job reads them, and only after you approve
+  the run. Pull requests, including ones from forks, never get them.
+- The signing job runs only three things from the branch: the workflow, the
+  `.github/scripts/ios-testflight-*.sh` scripts, and
+  `ios/Config/ExportOptions-TestFlight.plist`. Before you approve a run on a
+  branch you didn't write, read what changed in those files between the last
+  run you approved and the commit the run page shows. Changes elsewhere,
+  including the Xcode project, run in the archive job, which can't read the
+  key.
+- Approval is only as strong as your GitHub login. Anything that uses it,
+  including AI agents on your machines, can start a run and approve it
+  through the API, with no click from you. Allowing only branches that agents
+  don't push to, such as a protected `main`, keeps such a run from getting
+  the key. If you allow an agent's branch for a test, remove it afterwards.
+- The repository is public, so its Actions logs are public. The workflow's
+  own scripts print bundle IDs, your Team ID and entitlements, never your
+  team name, certificate names or keys, and GitHub masks secret values. Apple's
+  tools print their own errors, which can name your team or certificate. If
+  one does, delete that run's logs from the run page.
 - The job writes the key to the runner's temporary folder with mode 600 and
   deletes it at the end, even after a failure. GitHub-hosted runners are
   discarded after each job anyway.
 - If the key leaks, revoke it in Users and Access, Integrations. It stops
   working at once. Then generate a new one and update the secrets.
-- The builds are marked TestFlight internal only, so nobody can send them to
-  external testers or App Review by mistake. The keyboard records through
+- The export marks builds TestFlight internal only, so nobody can send them
+  to external testers or App Review by mistake. The keyboard records through
   WebKit, a technique App Review might not accept.
 - The app declares `ITSAppUsesNonExemptEncryption` as false because it only
   uses the HTTPS built into iOS. Adding a crypto library or custom encryption
@@ -432,9 +504,11 @@ Apple:
 - CFBundleVersion: <https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion>
 - Export compliance: <https://developer.apple.com/documentation/security/complying-with-encryption-export-regulations>
 - Upload requirements: <https://developer.apple.com/news/upcoming-requirements/?id=04282026a> and <https://developer.apple.com/news/?id=k1mtkt1k>
+- altool: <https://keith.github.io/xcode-man-pages/altool.1.html>, a copy of Xcode's man page
 
 GitHub:
 - Managing environments for deployment: <https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments>
 - Deployment branch and protection options: <https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments>
 - Reviewing deployments: <https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments>
 - Manually running a workflow: <https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow>
+- Events that trigger workflows, workflow_dispatch: <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows>

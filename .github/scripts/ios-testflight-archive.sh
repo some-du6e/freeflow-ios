@@ -12,10 +12,11 @@
 # keychain entitlements for `xcodebuild -exportArchive` to re-sign with.
 # CODE_SIGNING_ALLOWED=NO would drop them from the keyboard extension.
 #
-# Both jobs in .github/workflows/ios-testflight.yml run this script, so the
-# dry run archives with the same command as the upload. Never add
-# PRODUCT_BUNDLE_IDENTIFIER here: command-line settings apply to every
-# target, which would give the app and the keyboard the same ID.
+# The archive job in .github/workflows/ios-testflight.yml runs this script
+# for dry runs and uploads alike, in a job that can't read the App Store
+# Connect key. Never add PRODUCT_BUNDLE_IDENTIFIER here: command-line
+# settings apply to every target, which would give the app and the keyboard
+# the same ID.
 set -euo pipefail
 
 if [ "$#" -ne 4 ]; then
