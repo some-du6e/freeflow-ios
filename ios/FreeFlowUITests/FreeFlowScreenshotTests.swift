@@ -7,31 +7,34 @@ import XCTest
 /// the `-FreeFlowUITestKeyboardState` hook, which makes a DEBUG simulator
 /// keyboard show a fixed state (KeyboardDebugDisplayState).
 final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
-    /// Hook values, one per screenshot. Messages are synthetic.
-    static let keyboardStates = [
-        "idle",
-        "setup-needed:fullAccess",
-        "setup-needed:microphone",
-        "setup-needed:apiKey",
-        "starting",
-        "recording:tap",
-        "recording:hold",
-        "processing",
-        "inserted:dictation",
-        "inserted:rawFallback",
-        "inserted:returnOnly",
-        "inserted:lastDictation",
-        "inserted:handoff",
-        "nothing-to-insert:emptyTranscript",
-        "nothing-to-insert:noAudio",
-        "nothing-to-insert:noHistory",
-        "error",
-        "error:The synthetic provider is unavailable. Try again later.",
-        "fallback-available:captureUnavailable",
-        "fallback-available:lowMemory",
-        "fallback-available:openFailed",
-        "waiting-for-app",
-        "pending-insert",
+    /// Hook values, one per screenshot, with the status text each must show,
+    /// so a variant the keyboard doesn't parse (it falls back to a default)
+    /// can't pass as the state it names. Messages are synthetic.
+    static let keyboardStates: [(hook: String, text: String)] = [
+        ("idle", "Tap the mic to dictate, or hold to talk"),
+        ("setup-needed:fullAccess", "Turn on Allow Full Access in Settings to dictate"),
+        ("setup-needed:microphone", "Open FreeFlow to allow the microphone"),
+        ("setup-needed:apiKey", "Open FreeFlow to add your API key"),
+        ("starting", "Starting the microphone\u{2026}"),
+        ("recording:tap", "Listening\u{2026} tap the mic to stop"),
+        ("recording:hold", "Listening\u{2026} release to stop"),
+        ("processing", "Transcribing\u{2026}"),
+        ("inserted:dictation", "Inserted"),
+        ("inserted:rawFallback", "Inserted without cleanup"),
+        ("inserted:returnOnly", "Pressed return"),
+        ("inserted:lastDictation", "Inserted your last dictation"),
+        ("inserted:handoff", "Inserted from FreeFlow"),
+        ("nothing-to-insert:emptyTranscript", "Nothing to transcribe"),
+        ("nothing-to-insert:noAudio", "No audio was recorded"),
+        ("nothing-to-insert:noHistory", "Nothing to insert yet"),
+        ("error", "Request timed out \u{2014} try again"),
+        ("error:The synthetic provider is unavailable. Try again later.",
+         "The synthetic provider is unavailable. Try again later."),
+        ("fallback-available:captureUnavailable", "Can't record in the keyboard here. Record in FreeFlow instead."),
+        ("fallback-available:lowMemory", "Not enough memory to record here. Record in FreeFlow instead."),
+        ("fallback-available:openFailed", "Couldn't open FreeFlow. Open it from your Home Screen."),
+        ("waiting-for-app", "Waiting for FreeFlow. Finish recording there, then swipe back."),
+        ("pending-insert", "FreeFlow finished. Tap Insert from FreeFlow to add it here."),
     ]
 
     private var appearance: String {
@@ -41,12 +44,15 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
     @MainActor
     func testKeyboardStateScreenshots() throws {
         var missing: [String] = []
-        for hookValue in Self.keyboardStates {
+        for (hookValue, text) in Self.keyboardStates {
             var options = FreeFlowLaunchOptions.dictationReady
             options.keyboardState = hookValue
             let session = try openFreeFlowKeyboard(options)
             let expected = String(hookValue.split(separator: ":").first ?? "")
-            let shown = waitUntil(timeout: 10) { session.keyboard.status?.state == expected }
+            let shown = waitUntil(timeout: 10) {
+                guard let status = session.keyboard.status else { return false }
+                return status.state == expected && status.text == text
+            }
             let name = "kb-\(Self.slug(hookValue))-\(appearance)"
             captureNamed(name)
             if !shown {

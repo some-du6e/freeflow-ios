@@ -224,6 +224,20 @@ class FreeFlowKeyboardTestCase: FreeFlowUITestCase {
         )
     }
 
+    /// Waits until the test field holds exactly `text`, ignoring the spaces
+    /// insertion adds around it. The field starts empty after each launch.
+    @MainActor
+    func requireField(_ session: KeyboardSession, equals text: String, trace: KeyboardStateTrace) throws {
+        let matches = waitUntil(timeout: 10) {
+            session.field.textValue.trimmingCharacters(in: .whitespacesAndNewlines) == text
+        }
+        try require(
+            matches,
+            "The test field should hold exactly \"\(text)\"; it holds \"\(session.field.textValue)\" (seen: \(trace))",
+            evidence: session.keyboard.hosts
+        )
+    }
+
     func describe(_ status: (state: String, text: String)?) -> String {
         guard let status else { return "the FreeFlow keyboard isn't showing" }
         return "\(status.state) (\"\(status.text)\")"

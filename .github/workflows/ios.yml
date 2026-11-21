@@ -127,7 +127,7 @@ jobs:
             < /dev/null > "$DIAGNOSTICS_PATH/mock-provider.log" 2>&1 &
           echo "MOCK_PROVIDER_PID=$!" >> "$GITHUB_ENV"
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8765/healthz; then
+            if curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8765/healthz; then
               echo
               echo "The mock provider is up after $attempt check(s)"
               exit 0
@@ -159,7 +159,7 @@ jobs:
             -skip-testing:FreeFlowUITests/FreeFlowScreenshotTests \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 300 \
+            -default-test-execution-time-allowance 180 \
             -maximum-test-execution-time-allowance 420 \
             2>&1 | tee "$DIAGNOSTICS_PATH/xcodebuild-test.log"
 
@@ -380,11 +380,14 @@ jobs:
 
       - name: Start the mock provider
         run: |
-          # The latency keeps every recorder's processing state on screen.
+          # The latency keeps every recorder's processing state on screen. The
+          # request log is metadata only and is uploaded with the screenshots.
+          mkdir -p "$SCREENSHOTS_PATH"
           nohup python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 --latency 2 \
+            --log "$SCREENSHOTS_PATH/mock-provider-requests.jsonl" \
             < /dev/null > "$RUNNER_TEMP/mock-provider.log" 2>&1 &
           for attempt in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:8765/healthz && exit 0
+            curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8765/healthz && exit 0
             sleep 1
           done
           cat "$RUNNER_TEMP/mock-provider.log"
@@ -416,11 +419,15 @@ jobs:
       - name: Export screenshots
         if: always()
         run: |
+          status=0
           for appearance in light dark; do
             .github/scripts/export-test-attachments.sh \
-              "build/ios/screenshots-$appearance.xcresult" "$SCREENSHOTS_PATH/$appearance"
+              "build/ios/screenshots-$appearance.xcresult" "$SCREENSHOTS_PATH/$appearance" || status=1
           done
-          find "$SCREENSHOTS_PATH" -name '*.png' | sort | head -120
+          if [ -d "$SCREENSHOTS_PATH" ]; then
+            find "$SCREENSHOTS_PATH" -name '*.png' | sort | head -120
+          fi
+          exit "$status"
 
       - name: Upload screenshots
         if: always()

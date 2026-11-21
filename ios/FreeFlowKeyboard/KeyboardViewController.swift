@@ -35,11 +35,9 @@ final class KeyboardViewController: UIInputViewController {
     private var panelHeightConstraint: NSLayoutConstraint?
     private var didScheduleHeightConstraint = false
 
-    /// The first start after the capture attaches can wait on WebKit's GPU
-    /// process launching cold (2.19 s was measured on CI simulators), so it
-    /// gets this first-audio watchdog; later starts use the usual
-    /// `WebAudioCapture.startTimeout` (2 s).
-    private static let firstStartTimeout: TimeInterval = 4
+    /// Whether a capture started since `viewDidAppear` attached it. The first
+    /// start gets `KeyboardDictationMachine.firstStartCaptureTimeout`, because
+    /// it can wait on WebKit's GPU process launching cold.
     private var hasStartedSinceAttach = false
 
     private var wakeTask: Task<Void, Never>?
@@ -339,7 +337,9 @@ final class KeyboardViewController: UIInputViewController {
             if let rootInputView {
                 capture.attach(to: rootInputView)
             }
-            capture.startTimeoutInterval = hasStartedSinceAttach ? WebAudioCapture.startTimeout : Self.firstStartTimeout
+            capture.startTimeoutInterval = hasStartedSinceAttach
+                ? WebAudioCapture.startTimeout
+                : KeyboardDictationMachine.firstStartCaptureTimeout
             hasStartedSinceAttach = true
             capture.start()
         case .stopCapture:

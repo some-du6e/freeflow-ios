@@ -46,6 +46,7 @@ import http.client
 import json
 import math
 import signal
+import socketserver
 import struct
 import sys
 import threading
@@ -298,6 +299,10 @@ class MockHandler(BaseHTTPRequestHandler):
         if user_agent:
             meta["user_agent"] = user_agent[:200]
         record = route not in DEBUG_PATHS and route != "/healthz"
+        if record:
+            # Listed on arrival, so /debug/requests shows calls still in
+            # flight; "status" appears once the response is sent.
+            self.server.arrived(meta)
         try:
             body = self.read_body(meta)
             if route == "/healthz":
@@ -338,7 +343,7 @@ class MockHandler(BaseHTTPRequestHandler):
         finally:
             meta["duration_ms"] = round((time.monotonic() - started) * 1000, 1)
             if record:
-                self.server.record(meta)
+                self.server.completed(meta)
 
     def require_method(self, method: str) -> None:
         if self.command != method:
@@ -553,11 +558,20 @@ class MockServer(ThreadingHTTPServer):
         if self.latency > 0:
             time.sleep(self.latency)
 
-    def record(self, meta: dict) -> None:
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind looks up the host's name, which can stall for
+        # about 35 s on CI runners while the socket isn't listening yet.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+    def arrived(self, meta: dict) -> None:
         with self.lock:
             self.sequence += 1
             meta["seq"] = self.sequence
             self.requests.append(meta)
+
+    def completed(self, meta: dict) -> None:
+        with self.lock:
             if self.log_path:
                 with open(self.log_path, "a", encoding="utf-8") as log:
                     log.write(json.dumps(meta, sort_keys=True) + "\n")
@@ -791,8 +805,21 @@ def run_self_test() -> int:
         check("?since returns only newer requests", status == 200 and parsed["count"] == 1, parsed and parsed["count"])
         server.latency = 0.3
         started = time.monotonic()
+        before = server.snapshot()["last_seq"]
+        in_flight = []
+
+        def peek():
+            time.sleep(0.15)
+            in_flight.append(server.snapshot(before))
+
+        peeker = threading.Thread(target=peek)
+        peeker.start()
         status, parsed, _ = chat({"model": "m", "messages": messages})
+        peeker.join()
         check("--latency delays provider responses", status == 200 and time.monotonic() - started >= 0.3, status)
+        listed = in_flight[0]["requests"] if in_flight else []
+        check("a request in flight is listed before it completes",
+              len(listed) == 1 and "status" not in listed[0], listed)
         started = time.monotonic()
         status, parsed, _ = call("GET", "/healthz")
         check("--latency leaves the health check alone", status == 200 and time.monotonic() - started < 0.3, status)

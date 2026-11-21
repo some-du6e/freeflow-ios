@@ -16,26 +16,52 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         return options
     }
 
+    /// Where a dictation's audio came from, told apart by its level: the
+    /// synthetic tone is generated at amplitude 0.1 and uploads at about
+    /// -17.2 dBFS after the upload gain; WebKit's simulator microphone peaks
+    /// near -4.4 dBFS.
+    enum CaptureSource {
+        case webKit
+        case synthetic
+
+        var name: String {
+            switch self {
+            case .webKit: return "WebKit getUserMedia (simulator mock microphone)"
+            case .synthetic: return "the page's synthetic tone"
+            }
+        }
+
+        func matches(peakDBFS: Double) -> Bool {
+            switch self {
+            case .webKit: return peakDBFS > -12
+            case .synthetic: return peakDBFS > -19 && peakDBFS < -15
+            }
+        }
+    }
+
     /// The whole path a user takes: mic, speak, Done, cleaned text inserted.
     @MainActor
     func testDictationThroughWebKitCaptureInsertsCleanedText() throws {
-        try runCleanedDictation(.dictationReady, capturePath: "WebKit getUserMedia (simulator mock microphone)")
+        try runCleanedDictation(.dictationReady, source: .webKit)
     }
 
     @MainActor
     func testDictationThroughSyntheticCaptureInsertsCleanedText() throws {
-        try runCleanedDictation(Self.synthetic, capturePath: "the page's synthetic tone")
+        try runCleanedDictation(Self.synthetic, source: .synthetic)
     }
 
     @MainActor
     func testPreserveExactWordingInsertsRawTranscript() throws {
         var options = Self.synthetic
         options.preserveExactWording = true
+        // One request is all this path makes; the slow scenario keeps its
+        // processing state on screen long enough to see.
+        options.apiKey = MockProvider.apiKey(for: .slow)
         let (session, trace) = try openIdleKeyboard(options)
 
         let result = try dictateByTapping(in: session, trace: trace)
         XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
-        try requireField(session, contains: MockProvider.transcript, trace: trace)
+        try requireField(session, equals: MockProvider.transcript, trace: trace)
         try requireHistoryStatus("Inserted", in: session, trace: trace)
         XCTAssertFalse(session.field.textValue.contains(MockProvider.cleanedText), "Cleanup ran anyway")
 
@@ -53,7 +79,7 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
 
         let result = try dictateByTapping(in: session, trace: trace)
         XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
-        try requireField(session, contains: MockProvider.transcript, trace: trace)
+        try requireField(session, equals: MockProvider.transcript, trace: trace)
         try requireHistoryStatus("Inserted without cleanup", in: session, trace: trace)
         if let message = trace.texts[KeyboardDisplayState.inserted.rawValue] {
             XCTAssertEqual(message, "Inserted without cleanup")
@@ -93,11 +119,10 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         let before = session.field.textValue
 
         let result = try dictateByTapping(in: session, trace: trace)
-        XCTAssertTrue(ended(result, in: .nothingToInsert, trace: trace), "seen: \(trace)")
+        // Shown for 3 s, which outlasts XCUITest's slowest queries.
+        XCTAssertEqual(result, .nothingToInsert, "seen: \(trace)")
+        XCTAssertEqual(trace.texts[KeyboardDisplayState.nothingToInsert.rawValue], "Nothing to transcribe")
         try requireHistoryStatus("Nothing to insert", in: session, trace: trace)
-        if let message = trace.texts[KeyboardDisplayState.nothingToInsert.rawValue] {
-            XCTAssertEqual(message, "Nothing to transcribe")
-        }
         XCTAssertEqual(session.field.textValue, before)
         XCTAssertEqual(try providerRequests().chats.count, 0)
     }
@@ -115,10 +140,13 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         XCTAssertEqual(state, .idle, "seen: \(trace)")
         XCTAssertFalse(trace.saw(.processing), "Cancel during recording still processed: \(trace)")
 
-        // Give a stray upload time to arrive before checking there was none.
-        Thread.sleep(forTimeInterval: 2)
+        // The mock lists a request as soon as it arrives. Watch for longer
+        // than a stray stop (1 s) plus an upload would take.
+        let called = waitUntil(timeout: 5) {
+            ((try? providerRequests())?.all.count ?? 0) > 0
+        }
+        XCTAssertFalse(called, "Cancel still called the provider")
         XCTAssertEqual(session.field.textValue, before)
-        XCTAssertEqual(try providerRequests().all.count, 0, "Cancel still called the provider")
         report("Cancel stopped the recording with no provider call (seen: \(trace))")
     }
 
@@ -127,7 +155,8 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         let (session, trace) = try openIdleKeyboard(Self.synthetic)
         let result = try dictateByTapping(in: session, trace: trace)
         XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
-        try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+        // Exactly one copy before Insert last, so the second can only be its.
+        try requireField(session, equals: MockProvider.cleanedText, trace: trace)
 
         // Insert last is enabled again once the inserted message clears.
         _ = session.keyboard.waitForStatus([.idle], timeout: 10, trace: trace)
@@ -139,7 +168,12 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
             if let status = session.keyboard.status {
                 afterDictation.note(state: status.state, text: status.text)
             }
-            return session.field.textValue.components(separatedBy: MockProvider.cleanedText).count - 1 == 2
+            // Exactly two copies and nothing else, whatever the spacing.
+            let text = session.field.textValue
+            let count = text.components(separatedBy: MockProvider.cleanedText).count - 1
+            let rest = text.replacingOccurrences(of: MockProvider.cleanedText, with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return count == 2 && rest.isEmpty
         }
         capture("inserted-last")
         XCTAssertTrue(copies, "Expected the text twice, field holds \"\(session.field.textValue)\"")
@@ -181,12 +215,14 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         guard let mic = session.keyboard.keyboardElement(FreeFlowAccessibilityID.Keyboard.mic) else {
             throw RequirementFailure(message: "The keyboard has no mic button")
         }
-        let held: TimeInterval = 3
+        // Longer than the first start's 4 s budget, so the recording has
+        // audio even when the capture starts slowly.
+        let held: TimeInterval = 6
         mic.press(forDuration: held)
         let result = waitForDictationResult(in: session, trace: trace)
         capture("result-\(result?.rawValue ?? "none")")
         XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
-        try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+        try requireField(session, equals: MockProvider.cleanedText, trace: trace)
         try requireHistoryStatus("Inserted", in: session, trace: trace)
 
         // The recording ends at release, so it can't be longer than the hold.
@@ -207,6 +243,10 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         let session = try openFreeFlowKeyboard(options)
         let trace = KeyboardStateTrace()
         try requireIdle(session, trace: trace)
+        // The keyboard shows idle before its hidden capture page has loaded,
+        // and exposes no readiness signal. Let the page load, so the first
+        // start's watchdog isn't spent on it.
+        Thread.sleep(forTimeInterval: 1.5)
         capture("keyboard-ready")
         return (session, trace)
     }
@@ -214,7 +254,8 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
     /// Dictates with cleanup on and checks the keyboard, the field and the
     /// requests the mock received.
     @MainActor
-    private func runCleanedDictation(_ options: FreeFlowLaunchOptions, capturePath: String) throws {
+    private func runCleanedDictation(_ options: FreeFlowLaunchOptions, source: CaptureSource) throws {
+        let capturePath = source.name
         let (session, trace) = try openIdleKeyboard(options)
 
         let result = try dictateByTapping(in: session, recordFor: 2, trace: trace)
@@ -223,7 +264,7 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
             "Dictation through \(capturePath) ended in \(describe(session.keyboard.status)) (seen: \(trace))",
             evidence: session.keyboard.hosts
         )
-        try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+        try requireField(session, equals: MockProvider.cleanedText, trace: trace)
         try requireHistoryStatus("Inserted", in: session, trace: trace)
         XCTAssertTrue(trace.saw(.recording, before: .processing), "seen: \(trace)")
         if trace.saw(.inserted) {
@@ -237,6 +278,8 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         if let upload = requests.transcriptions.first {
             XCTAssertEqual(upload["status"] as? Int, 200)
             assertValidUpload(upload, minimumSeconds: 1)
+            let peak = (upload["wav"] as? [String: Any])?["peak_dbfs"] as? Double ?? -99
+            XCTAssertTrue(source.matches(peakDBFS: peak), "A peak of \(peak) dBFS isn't \(capturePath)'s level")
             report("Capture through \(capturePath) worked; uploaded \(describeUpload(upload))")
         }
         if let chat = requests.chats.first {

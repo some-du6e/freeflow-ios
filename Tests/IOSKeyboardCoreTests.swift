@@ -270,7 +270,7 @@ enum IOSKeyboardCoreTests {
         effects = machine.handle(.micPressEnded, now: at(0.25))
         TestSupport.expectEqual(effects, [])
         TestSupport.expectEqual(machine.activeRecording?.gesture, .latched)
-        TestSupport.expectEqual(machine.nextWakeUp, at(4))
+        TestSupport.expectEqual(machine.nextWakeUp, at(6))
 
         effects = machine.handle(.captureStarted, now: at(0.5))
         TestSupport.expectEqual(effects, [.haptic, .reportCapture(worked: true, failure: nil)])
@@ -505,11 +505,18 @@ enum IOSKeyboardCoreTests {
     }
 
     private static func testStartAndStopBackstops() {
+        // The capture's own watchdog, up to the first start's 4 s, must get to
+        // report why a start failed before the backstop gives up.
+        TestSupport.expect(
+            KeyboardDictationMachine.startBackstop > KeyboardDictationMachine.firstStartCaptureTimeout,
+            "The start backstop must outlast the capture's first-start watchdog"
+        )
         var silent = readyMachine()
         _ = silent.handle(.micPressBegan(documentID: nil), now: at(0))
         _ = silent.handle(.micPressEnded, now: at(0.25))
-        TestSupport.expectEqual(silent.handle(.tick, now: at(3.5)), [])
-        TestSupport.expectEqual(silent.handle(.tick, now: at(4)), [
+        TestSupport.expectEqual(silent.handle(.tick, now: at(4)), [])
+        TestSupport.expectEqual(silent.handle(.tick, now: at(5.5)), [])
+        TestSupport.expectEqual(silent.handle(.tick, now: at(6)), [
             .cancelCapture,
             .reportCapture(worked: false, failure: .startTimedOut),
             .announce(fallbackText),

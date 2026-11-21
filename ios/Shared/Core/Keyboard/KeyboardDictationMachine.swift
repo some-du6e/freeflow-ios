@@ -179,9 +179,15 @@ struct KeyboardDictationMachine: Equatable {
 
     static let holdToTalkThreshold: TimeInterval = 0.35
     static let maximumRecordingDuration: TimeInterval = 5 * 60
-    /// `WebAudioCapture` reports `.startTimedOut` after its own 2 s watchdog.
-    /// This covers a capture that never answers at all.
-    static let startBackstop: TimeInterval = 4
+    /// The capture's first-audio watchdog for the keyboard's first start
+    /// after it attaches the capture, which can wait on WebKit's GPU process
+    /// launching cold (2.19 s was measured on CI simulators). Later starts
+    /// use `WebAudioCapture.startTimeout` (2 s).
+    static let firstStartCaptureTimeout: TimeInterval = 4
+    /// `WebAudioCapture` reports why a start failed after its own watchdog.
+    /// This covers a capture that never answers at all, so it outlasts the
+    /// longest watchdog; otherwise it would preempt the capture's report.
+    static let startBackstop: TimeInterval = firstStartCaptureTimeout + 2
     /// How long to wait for the finished recording after asking to stop.
     static let stopBackstop: TimeInterval = 5
     static let insertedDisplayDuration: TimeInterval = 1.5
