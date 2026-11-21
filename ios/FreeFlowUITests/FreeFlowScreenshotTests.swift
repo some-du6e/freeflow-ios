@@ -24,9 +24,11 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
         ("inserted:returnOnly", "Pressed return"),
         ("inserted:lastDictation", "Inserted your last dictation"),
         ("inserted:handoff", "Inserted from FreeFlow"),
+        ("inserted:handoffWithoutReturn", "Inserted from FreeFlow. Return wasn't pressed."),
         ("nothing-to-insert:emptyTranscript", "Nothing to transcribe"),
         ("nothing-to-insert:noAudio", "No audio was recorded"),
         ("nothing-to-insert:noHistory", "Nothing to insert yet"),
+        ("nothing-to-insert:returnNotPressed", "Return wasn't pressed, since this may be a different field."),
         ("error", "Request timed out \u{2014} try again"),
         ("error:The synthetic provider is unavailable. Try again later.",
          "The synthetic provider is unavailable. Try again later."),
@@ -127,11 +129,15 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
         try recordInApp(app, flow: "failing", expecting: "error")
     }
 
-    /// The app's half of the keyboard fallback (DESIGN §5.4): the URL the
-    /// keyboard opens starts the recorder for that session, which hands the
-    /// result back through the App Group and says to swipe back.
+    /// A `freeflow://dictate` link the keyboard didn't ask for, as any app
+    /// could open it: its session isn't the one the keyboard awaits, so the
+    /// recorder opens idle and records only after a tap on Start, and it
+    /// keeps the result in the app instead of handing it to a keyboard
+    /// (FreeFlowAppModel.handle(url:), RecorderModel.deliver). The keyboard's
+    /// own handoff, with the awaited session, needs the keyboard's fallback
+    /// state, which no hook can force yet.
     @MainActor
-    func testRecorderHandoffScreenshot() throws {
+    func testDictateLinkTheKeyboardDidNotAskForWaitsForStart() throws {
         var options = FreeFlowLaunchOptions.dictationReady
         options.syntheticCapture = true
         let app = launchFreeFlow(options)
@@ -148,29 +154,30 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
         }
         let status = element(FreeFlowAccessibilityID.Recorder.status, in: app)
         let start = element(FreeFlowAccessibilityID.Recorder.start, in: app)
-        // The keyboard isn't awaiting this URL's session, so the recorder may
-        // open idle with a Start button; earlier builds started at once.
-        _ = waitUntil(timeout: 20) { start.exists || status.textValue == "recording" }
-        if start.exists {
-            captureNamed("app-recorder-handoff-idle-\(appearance)")
-            start.tap()
-        }
+        try require(
+            start.waitForExistence(timeout: 20),
+            "The link's recorder shows no Start button (status \(status.textValue))",
+            evidence: [app, springboard]
+        )
+        XCTAssertEqual(status.textValue, "idle", "A link the keyboard didn't ask for must not start recording")
+        captureNamed("app-recorder-handoff-idle-\(appearance)")
+        start.tap()
         try require(
             waitUntil(timeout: 20) { status.textValue == "recording" },
-            "The dictate URL's recorder didn't record (status \(status.textValue))",
-            evidence: [app, springboard]
+            "Start didn't record (status \(status.textValue))",
+            evidence: [app]
         )
         Thread.sleep(forTimeInterval: 1.5)
         captureNamed("app-recorder-handoff-recording-\(appearance)")
         element(FreeFlowAccessibilityID.Recorder.stop, in: app).tap()
         try require(
-            waitUntil(timeout: 45) { ["handed-off", "done"].contains(status.textValue) },
-            "The dictate URL's recorder ended in \(status.textValue)",
+            waitUntil(timeout: 45) { status.textValue == "not-handed-off" },
+            "The link's recording ended in \(status.textValue), not not-handed-off",
             evidence: [app]
         )
-        report("The dictate URL's recorder ended in \(status.textValue)")
+        report("The link's recorder waited for Start and kept its result (\(status.textValue))")
         Thread.sleep(forTimeInterval: 0.5)
-        captureNamed("app-recorder-handed-off-\(appearance)")
+        captureNamed("app-recorder-handoff-not-sent-\(appearance)")
     }
 
     /// Opens the in-app recorder from Home, records the synthetic tone for a
