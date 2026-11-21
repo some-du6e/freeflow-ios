@@ -119,8 +119,10 @@ jobs:
       - name: Start the mock provider
         run: |
           mkdir -p "$DIAGNOSTICS_PATH"
+          # The latency, like a real provider's, keeps the keyboard's
+          # processing state on screen long enough for the tests to see it.
           nohup python3 .github/scripts/mock-openai-server.py \
-            --host 127.0.0.1 --port 8765 \
+            --host 127.0.0.1 --port 8765 --latency 0.75 \
             --log "$DIAGNOSTICS_PATH/mock-provider-requests.jsonl" \
             > "$DIAGNOSTICS_PATH/mock-provider.log" 2>&1 &
           echo "MOCK_PROVIDER_PID=$!" >> "$GITHUB_ENV"
@@ -147,6 +149,7 @@ jobs:
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -derivedDataPath "$DERIVED_DATA_PATH" \
             -resultBundlePath "$RESULT_BUNDLE_PATH" \
+            -skip-testing:FreeFlowUITests/FreeFlowScreenshotTests \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 300 \
@@ -183,46 +186,8 @@ jobs:
       - name: Export test attachments
         if: always()
         run: |
-          if [ ! -d "$RESULT_BUNDLE_PATH" ]; then
-            echo "No result bundle at $RESULT_BUNDLE_PATH"
-            exit 0
-          fi
-          mkdir -p "$ATTACHMENTS_PATH"
-          xcrun xcresulttool export attachments \
-            --path "$RESULT_BUNDLE_PATH" \
-            --output-path "$ATTACHMENTS_PATH"
-          # Rename the exported files from UUIDs to the names the tests gave
-          # them, such as testName-03-freeflow-keyboard.png.
-          python3 - "$ATTACHMENTS_PATH" <<'PY'
-          import json
-          import os
-          import re
-          import sys
-
-          folder = sys.argv[1]
-          manifest_path = os.path.join(folder, "manifest.json")
-          with open(manifest_path) as file:
-              manifest = json.load(file)
-          taken = set()
-          for test in manifest:
-              for attachment in test.get("attachments", []):
-                  exported = attachment.get("exportedFileName")
-                  suggested = attachment.get("suggestedHumanReadableName") or exported
-                  if not exported or not os.path.exists(os.path.join(folder, exported)):
-                      continue
-                  name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}(?=\.[^.]+$)", "", suggested)
-                  stem, extension = os.path.splitext(name)
-                  candidate, number = name, 2
-                  while candidate in taken:
-                      candidate = f"{stem}-{number}{extension}"
-                      number += 1
-                  taken.add(candidate)
-                  os.rename(os.path.join(folder, exported), os.path.join(folder, candidate))
-                  attachment["exportedFileName"] = candidate
-          with open(manifest_path, "w") as file:
-              json.dump(manifest, file, indent=2)
-          PY
-          ls -la "$ATTACHMENTS_PATH"
+          .github/scripts/export-test-attachments.sh "$RESULT_BUNDLE_PATH" "$ATTACHMENTS_PATH"
+          ls -la "$ATTACHMENTS_PATH" 2>/dev/null || true
 
       - name: Upload test results
         if: always()
@@ -339,6 +304,117 @@ jobs:
           PY
             echo "::endgroup::"
           done
+
+  # Review screenshots of every keyboard state in light and dark mode. Its
+  # own job keeps the main test job short; the two run side by side.
+  screenshots:
+    name: Screenshots (Xcode 26.6, iOS 26.5)
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      DERIVED_DATA_PATH: build/ios/DerivedData
+      SCREENSHOTS_PATH: build/ios/screenshots
+      APP_PATH: build/ios/DerivedData/Build/Products/Debug-iphonesimulator/FreeFlow.app
+      SIMULATOR_NAME: iPhone 17
+      SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Boot simulator
+        run: |
+          udid="$(xcrun simctl list devices available --json | jq -r \
+            --arg runtime "$SIMULATOR_RUNTIME" --arg name "$SIMULATOR_NAME" \
+            '[.devices[$runtime][]? | select(.name == $name)][0].udid // empty')"
+          if [ -z "$udid" ]; then
+            echo "::error::No available $SIMULATOR_NAME simulator for $SIMULATOR_RUNTIME"
+            exit 1
+          fi
+          echo "Booting $SIMULATOR_NAME ($udid)"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+          xcrun simctl boot "$udid" || echo "simctl boot exited with $?; the wait step boots it again"
+
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing \
+            -project ios/FreeFlow.xcodeproj \
+            -scheme FreeFlow \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=
+
+      - name: Wait for the simulator to boot
+        timeout-minutes: 5
+        run: xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Prepare the simulator for keyboard tests
+        timeout-minutes: 6
+        run: .github/scripts/prepare-ios-simulator.sh configure "$SIMULATOR_UDID" "$APP_PATH"
+
+      - name: Start the mock provider
+        run: |
+          nohup python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 \
+            > "$RUNNER_TEMP/mock-provider.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8765/healthz && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/mock-provider.log"
+          exit 1
+
+      # The tests name each screenshot after the appearance they're told.
+      - name: Take screenshots
+        timeout-minutes: 20
+        run: |
+          status=0
+          for appearance in light dark; do
+            xcrun simctl ui "$SIMULATOR_UDID" appearance "$appearance"
+            TEST_RUNNER_FREEFLOW_APPEARANCE="$appearance" xcodebuild test-without-building \
+              -project ios/FreeFlow.xcodeproj \
+              -scheme FreeFlow \
+              -configuration Debug \
+              -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+              -derivedDataPath "$DERIVED_DATA_PATH" \
+              -resultBundlePath "build/ios/screenshots-$appearance.xcresult" \
+              -only-testing:FreeFlowUITests/FreeFlowScreenshotTests \
+              -parallel-testing-enabled NO \
+              -test-timeouts-enabled YES \
+              -default-test-execution-time-allowance 600 \
+              -maximum-test-execution-time-allowance 900 \
+              || status=1
+          done
+          exit "$status"
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          for appearance in light dark; do
+            .github/scripts/export-test-attachments.sh \
+              "build/ios/screenshots-$appearance.xcresult" "$SCREENSHOTS_PATH/$appearance"
+          done
+          find "$SCREENSHOTS_PATH" -name '*.png' | sort | head -120
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-screenshots
+          path: ${{ env.SCREENSHOTS_PATH }}
+          if-no-files-found: warn
+          retention-days: 14
 
   # Pull requests already run check.yml. Work-in-progress branch pushes don't,
   # so run the same macOS checks here: the iOS targets share Sources/ files and

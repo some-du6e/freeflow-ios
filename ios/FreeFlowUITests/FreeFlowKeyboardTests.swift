@@ -1,160 +1,206 @@
 import XCTest
 
-/// Drives the FreeFlow keyboard inside the app's own test field, the way a
-/// person would: focus the field, switch keyboards with the globe key, tap.
+/// End-to-end dictation in the FreeFlow keyboard, through CI's mock provider
+/// (.github/scripts/mock-openai-server.py, DESIGN §5.3).
 ///
-/// Wave 1 targets the placeholder keyboard, whose mic button inserts
-/// "FreeFlow". The full dictation flow through the mock provider builds on
-/// `openFreeFlowKeyboard()` and `tapKeyboardButton(_:)`.
-final class FreeFlowKeyboardTests: FreeFlowUITestCase {
-    private static let placeholderText = "FreeFlow"
+/// Each test resets the app and the mock's request log, focuses the app's
+/// test field, switches to FreeFlow with the globe key and dictates. The
+/// first test records through WebKit's simulator microphone (the real
+/// in-keyboard path); the rest feed the capture page's synthetic tone, so
+/// they check the pipeline's routes and the keyboard's states without
+/// depending on WebKit's audio.
+final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
+    private static var synthetic: FreeFlowLaunchOptions {
+        var options = FreeFlowLaunchOptions.dictationReady
+        options.syntheticCapture = true
+        return options
+    }
+
+    /// The whole path a user takes: mic, speak, Done, cleaned text inserted.
+    @MainActor
+    func testDictationThroughWebKitCaptureInsertsCleanedText() throws {
+        try runCleanedDictation(.dictationReady, capturePath: "WebKit getUserMedia (simulator mock microphone)")
+    }
 
     @MainActor
-    func testKeyboardInsertsTextIntoTestField() throws {
-        let session = try openFreeFlowKeyboard()
-        let field = session.field
-        let before = field.textValue
+    func testDictationThroughSyntheticCaptureInsertsCleanedText() throws {
+        try runCleanedDictation(Self.synthetic, capturePath: "the page's synthetic tone")
+    }
 
-        switch session.mic {
-        case .element(let mic, let host):
-            tap(mic, named: "freeflow.keyboard.mic", host: host)
-        case .hidden:
-            // A last look, in case the extension finished loading meanwhile.
-            if let mic = session.keyboard.keyboardElement(FreeFlowAccessibilityID.Keyboard.mic) {
-                tap(mic, named: "freeflow.keyboard.mic", host: "app or SpringBoard (late)")
-            } else {
-                report("XCUITest can't see the keyboard's elements; tapping the keyboard area by coordinates")
-                let point = session.keyboard.tapKeyboardCenterColumn {
-                    field.textValue.contains(Self.placeholderText)
-                }
-                report(point.map { "A coordinate tap at \($0) inserted the text" }
-                    ?? "No coordinate tap inserted the text")
-            }
+    @MainActor
+    func testPreserveExactWordingInsertsRawTranscript() throws {
+        var options = Self.synthetic
+        options.preserveExactWording = true
+        let (session, trace) = try openIdleKeyboard(options)
+
+        let result = try dictateByTapping(in: session, trace: trace)
+        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        try requireField(session, contains: MockProvider.transcript, trace: trace)
+        XCTAssertFalse(session.field.textValue.contains(MockProvider.cleanedText), "Cleanup ran anyway")
+
+        let requests = try providerRequests()
+        XCTAssertEqual(requests.transcriptions.count, 1)
+        XCTAssertEqual(requests.chats.count, 0, "Preserve exact wording must skip the cleanup request")
+        report("Inserted the raw transcript with no cleanup request (seen: \(trace))")
+    }
+
+    @MainActor
+    func testCleanupFailureInsertsRawTranscriptWithoutCleanup() throws {
+        var options = Self.synthetic
+        options.apiKey = MockProvider.apiKey(for: .chatError)
+        let (session, trace) = try openIdleKeyboard(options)
+
+        let result = try dictateByTapping(in: session, trace: trace)
+        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        try requireField(session, contains: MockProvider.transcript, trace: trace)
+        XCTAssertEqual(trace.texts[KeyboardDisplayState.inserted.rawValue], "Inserted without cleanup")
+
+        let requests = try providerRequests()
+        XCTAssertEqual(requests.transcriptions.first?["status"] as? Int, 200)
+        XCTAssertFalse(requests.chats.isEmpty, "No cleanup request was made")
+        XCTAssertTrue(requests.chats.allSatisfy { $0["status"] as? Int == 500 })
+        report("Cleanup failed with HTTP 500 \(requests.chats.count) time(s); the raw transcript went in "
+            + "with \"\(trace.texts[KeyboardDisplayState.inserted.rawValue] ?? "?")\"")
+    }
+
+    @MainActor
+    func testTranscriptionFailureShowsErrorAndLeavesFieldUnchanged() throws {
+        var options = Self.synthetic
+        options.apiKey = MockProvider.apiKey(for: .transcriptionError)
+        let (session, trace) = try openIdleKeyboard(options)
+        let before = session.field.textValue
+
+        let result = try dictateByTapping(in: session, trace: trace)
+        XCTAssertEqual(result, .error, "seen: \(trace)")
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertEqual(session.field.textValue, before, "The field changed after a failed transcription")
+
+        let requests = try providerRequests()
+        XCTAssertEqual(requests.transcriptions.first?["status"] as? Int, 500)
+        XCTAssertEqual(requests.chats.count, 0)
+        report("Transcription failed with HTTP 500; the keyboard said \"\(trace.texts["error"] ?? "?")\"")
+    }
+
+    @MainActor
+    func testEmptyTranscriptShowsNothingToInsert() throws {
+        var options = Self.synthetic
+        options.apiKey = MockProvider.apiKey(for: .emptyTranscript)
+        let (session, trace) = try openIdleKeyboard(options)
+        let before = session.field.textValue
+
+        let result = try dictateByTapping(in: session, trace: trace)
+        XCTAssertEqual(result, .nothingToInsert, "seen: \(trace)")
+        XCTAssertEqual(trace.texts[KeyboardDisplayState.nothingToInsert.rawValue], "Nothing to transcribe")
+        XCTAssertEqual(session.field.textValue, before)
+        XCTAssertEqual(try providerRequests().chats.count, 0)
+    }
+
+    @MainActor
+    func testCancelDuringRecordingInsertsNothingAndCallsNoProvider() throws {
+        let (session, trace) = try openIdleKeyboard(Self.synthetic)
+        let before = session.field.textValue
+
+        try startTapDictation(in: session, trace: trace)
+        Thread.sleep(forTimeInterval: 1)
+        try tapKeyboardButton(FreeFlowAccessibilityID.Keyboard.cancel, in: session)
+        let state = session.keyboard.waitForStatus([.idle], timeout: 10, trace: trace)
+        capture("cancelled")
+        XCTAssertEqual(state, .idle, "seen: \(trace)")
+        XCTAssertFalse(trace.saw(.processing), "Cancel during recording still processed: \(trace)")
+
+        // Give a stray upload time to arrive before checking there was none.
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertEqual(session.field.textValue, before)
+        XCTAssertEqual(try providerRequests().all.count, 0, "Cancel still called the provider")
+        report("Cancel stopped the recording with no provider call (seen: \(trace))")
+    }
+
+    @MainActor
+    func testInsertLastReinsertsPreviousResult() throws {
+        let (session, trace) = try openIdleKeyboard(Self.synthetic)
+        let result = try dictateByTapping(in: session, trace: trace)
+        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+
+        // Insert last is enabled again once the inserted message clears.
+        _ = session.keyboard.waitForStatus([.idle], timeout: 10, trace: trace)
+        try tapKeyboardButton(FreeFlowAccessibilityID.Keyboard.insertLast, in: session)
+        let again = session.keyboard.waitForStatus([.inserted], timeout: 10, trace: trace)
+        capture("inserted-last")
+        XCTAssertEqual(again, .inserted, "seen: \(trace)")
+        XCTAssertEqual(trace.texts[KeyboardDisplayState.inserted.rawValue], "Inserted your last dictation")
+        let copies = waitUntil(timeout: 5) {
+            session.field.textValue.components(separatedBy: MockProvider.cleanedText).count - 1 == 2
         }
+        XCTAssertTrue(copies, "Expected the text twice, field holds \"\(session.field.textValue)\"")
+        XCTAssertEqual(try providerRequests().transcriptions.count, 1, "Insert last must not call the provider")
+    }
 
-        let inserted = waitUntil(timeout: 10) { field.textValue.contains(Self.placeholderText) }
-        capture("after-mic-tap", hierarchyOf: [session.app])
+    /// Hold to talk: press and hold the mic, release to stop.
+    @MainActor
+    func testHoldToTalkRecordsWhileHeld() throws {
+        let (session, trace) = try openIdleKeyboard(Self.synthetic)
+        guard let mic = session.keyboard.keyboardElement(FreeFlowAccessibilityID.Keyboard.mic) else {
+            throw RequirementFailure(message: "The keyboard has no mic button")
+        }
+        let held: TimeInterval = 3
+        mic.press(forDuration: held)
+        let result = waitForDictationResult(in: session, trace: trace)
+        capture("result-\(result?.rawValue ?? "none")")
+        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+
+        // The recording ends at release, so it can't be longer than the hold.
+        let requests = try providerRequests()
+        XCTAssertEqual(requests.transcriptions.count, 1)
+        if let upload = requests.transcriptions.first {
+            assertValidUpload(upload, minimumSeconds: 1, maximumSeconds: held + 0.5)
+            report("Held the mic \(held) s; uploaded \(describeUpload(upload)) (seen: \(trace))")
+        }
+    }
+
+    // MARK: Steps
+
+    /// Clears the mock's log, opens the keyboard and waits for `idle`.
+    @MainActor
+    private func openIdleKeyboard(_ options: FreeFlowLaunchOptions) throws -> (KeyboardSession, KeyboardStateTrace) {
+        try resetProviderRequests()
+        let session = try openFreeFlowKeyboard(options)
+        let trace = KeyboardStateTrace()
+        try requireIdle(session, trace: trace)
+        capture("keyboard-ready")
+        return (session, trace)
+    }
+
+    /// Dictates with cleanup on and checks the keyboard, the field and the
+    /// requests the mock received.
+    @MainActor
+    private func runCleanedDictation(_ options: FreeFlowLaunchOptions, capturePath: String) throws {
+        let (session, trace) = try openIdleKeyboard(options)
+
+        let result = try dictateByTapping(in: session, recordFor: 2, trace: trace)
         try require(
-            inserted,
-            "The test field does not contain \"\(Self.placeholderText)\" (before: \"\(before)\", "
-                + "now: \"\(field.textValue)\")",
+            result == .inserted,
+            "Dictation through \(capturePath) ended in \(describe(session.keyboard.status)) (seen: \(trace))",
             evidence: session.keyboard.hosts
         )
-        report("The test field now contains \"\(field.textValue)\"")
-    }
+        try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+        XCTAssertTrue(trace.saw(.recording, before: .processing), "seen: \(trace)")
+        XCTAssertTrue(trace.saw(.processing, before: .inserted), "seen: \(trace)")
 
-    // MARK: Shared steps
-
-    /// Where the keyboard's mic button is, as far as XCUITest can tell.
-    enum MicButton {
-        case element(XCUIElement, host: String)
-        /// The FreeFlow keyboard is up but exposes no accessibility elements.
-        case hidden
-    }
-
-    struct KeyboardSession {
-        let app: XCUIApplication
-        let field: XCUIElement
-        let keyboard: KeyboardDriver
-        let mic: MicButton
-    }
-
-    /// Launches the app, focuses the test field, and switches to the FreeFlow
-    /// keyboard, enabling it in Settings first if CI's setup didn't.
-    @MainActor
-    func openFreeFlowKeyboard(_ options: FreeFlowLaunchOptions = .dictationReady) throws -> KeyboardSession {
-        let app = launchFreeFlow(options)
-        let keyboard = KeyboardDriver(app: app)
-        let field = element(FreeFlowAccessibilityID.App.testField, in: app)
-        try require(
-            field.waitForExistence(timeout: Self.firstQueryTimeout),
-            "The test field did not appear after launch",
-            evidence: [app]
-        )
-        capture("launched")
-
-        try focus(field, keyboard: keyboard)
-        var outcome = keyboard.switchToFreeFlow()
-        if case .notReached(let reason) = outcome {
-            report("Could not reach the FreeFlow keyboard (\(reason)); enabling it in Settings")
-            let settings = SystemSettingsDriver()
-            let switches = try settings.inspectFreeFlowKeyboard(turnOn: true) { step in
-                capture(step, hierarchyOf: [settings.settings])
-            }
-            report("Settings fallback:\n\(switches)")
-            // Turning on Full Access kills the containing app, so launch it
-            // again, with the same arguments, instead of activating it.
-            app.launch()
-            try require(
-                field.waitForExistence(timeout: Self.firstQueryTimeout),
-                "The test field did not appear after relaunching the app",
-                evidence: [app]
-            )
-            try focus(field, keyboard: keyboard)
-            outcome = keyboard.switchToFreeFlow()
+        let requests = try providerRequests()
+        XCTAssertEqual(requests.transcriptions.count, 1, "transcription requests")
+        XCTAssertEqual(requests.chats.count, 1, "cleanup requests")
+        assertFromKeyboard(requests.all)
+        if let upload = requests.transcriptions.first {
+            XCTAssertEqual(upload["status"] as? Int, 200)
+            assertValidUpload(upload, minimumSeconds: 1)
+            report("Capture through \(capturePath) worked; uploaded \(describeUpload(upload))")
         }
-        capture("freeflow-keyboard", hierarchyOf: keyboard.hosts)
-
-        switch outcome {
-        case .found(let mic, let how):
-            let inApp = element(FreeFlowAccessibilityID.Keyboard.mic, in: app).exists
-            report("Reached the FreeFlow keyboard with \(how)")
-            return KeyboardSession(app: app, field: field, keyboard: keyboard,
-                                   mic: .element(mic, host: inApp ? "app" : "SpringBoard"))
-        case .customKeyboardWithoutElements(let how):
-            report("Reached a keyboard without accessibility elements with \(how)")
-            return KeyboardSession(app: app, field: field, keyboard: keyboard, mic: .hidden)
-        case .notReached(let reason):
-            try require(false, "Could not switch to the FreeFlow keyboard: \(reason)", evidence: keyboard.hosts)
-            throw RequirementFailure(message: reason)
+        if let chat = requests.chats.first {
+            XCTAssertEqual(chat["status"] as? Int, 200)
+            XCTAssertEqual((chat["chat"] as? [String: Any])?["kind"] as? String, "cleanup")
         }
-    }
-
-    /// Taps a FreeFlow keyboard button by accessibility identifier.
-    @MainActor
-    func tapKeyboardButton(_ identifier: String, in session: KeyboardSession, timeout: TimeInterval = 10) throws {
-        let button = session.keyboard.waitForKeyboardElement(identifier, timeout: timeout)
-        try require(button != nil, "The keyboard has no \(identifier) element", evidence: session.keyboard.hosts)
-        if let button {
-            tap(button, named: identifier, host: nil)
-        }
-    }
-
-    /// Taps a keyboard element, at its frame's center when XCUITest says it
-    /// isn't hittable (remote keyboard views can report that wrongly).
-    @MainActor
-    private func tap(_ element: XCUIElement, named identifier: String, host: String?) {
-        let hittable = element.isHittable
-        if let host {
-            report("XCUITest sees the keyboard's \(identifier) in the \(host) hierarchy (hittable: \(hittable))")
-        }
-        if hittable {
-            element.tap()
-        } else {
-            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        }
-    }
-
-    /// Focuses `field` and waits for a software keyboard: the system keys,
-    /// FreeFlow's mic, or at least the globe of the bar under the keyboard.
-    @MainActor
-    private func focus(_ field: XCUIElement, keyboard: KeyboardDriver) throws {
-        field.tap()
-        // System keys or FreeFlow's mic mean a keyboard is up. A globe alone
-        // can be a keyboard whose elements XCUITest can't see, so it counts
-        // only once neither shows up.
-        var visible = waitUntil(timeout: 20) {
-            keyboard.systemKeysVisible
-                || keyboard.keyboardElement(FreeFlowAccessibilityID.Keyboard.mic) != nil
-        }
-        if !visible {
-            visible = keyboard.globeKey != nil
-        }
-        capture("field-focused", hierarchyOf: [keyboard.app])
-        try require(
-            visible,
-            "No software keyboard appeared after focusing the test field. Is a hardware keyboard connected?",
-            evidence: keyboard.hosts
-        )
+        report("States seen: \(trace); the field holds \"\(session.field.textValue)\"")
     }
 }

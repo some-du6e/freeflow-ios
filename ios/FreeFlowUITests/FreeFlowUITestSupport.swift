@@ -12,6 +12,8 @@ enum FreeFlowAccessibilityID {
         static let returnKey = "freeflow.keyboard.return"
         static let insertLast = "freeflow.keyboard.insertLast"
         static let openApp = "freeflow.keyboard.openApp"
+        /// The Insert from FreeFlow CTA of the `pending-insert` state.
+        static let insertPending = "freeflow.keyboard.insertPending"
         /// A label whose accessibilityValue is a `KeyboardDisplayState` raw value.
         static let status = "freeflow.keyboard.status"
     }
@@ -50,6 +52,40 @@ enum KeyboardDisplayState: String, CaseIterable {
     case error
     case fallbackAvailable = "fallback-available"
     case waitingForApp = "waiting-for-app"
+    case pendingInsert = "pending-insert"
+}
+
+/// The keyboard states a test saw while it waited, in order and without
+/// repeats, with the status text shown in each.
+final class KeyboardStateTrace: CustomStringConvertible {
+    private(set) var states: [String] = []
+    private(set) var texts: [String: String] = [:]
+
+    func note(state: String, text: String) {
+        if states.last != state {
+            states.append(state)
+        }
+        if !text.isEmpty {
+            texts[state] = text
+        }
+    }
+
+    func saw(_ state: KeyboardDisplayState) -> Bool {
+        states.contains(state.rawValue)
+    }
+
+    /// Whether `earlier` was seen before `later`.
+    func saw(_ earlier: KeyboardDisplayState, before later: KeyboardDisplayState) -> Bool {
+        guard let first = states.firstIndex(of: earlier.rawValue),
+              let second = states.lastIndex(of: later.rawValue) else {
+            return false
+        }
+        return first < second
+    }
+
+    var description: String {
+        states.isEmpty ? "(none)" : states.joined(separator: " -> ")
+    }
 }
 
 /// Bundle identifiers the tests drive or inspect.
@@ -156,6 +192,9 @@ struct FreeFlowLaunchOptions: Sendable {
     var microphoneGranted = true
     var preserveExactWording: Bool?
     var syntheticCapture = false
+    /// A `KeyboardDebugDisplayState` value such as `recording:hold`, which a
+    /// DEBUG keyboard shows instead of its live state; `live` clears it.
+    var keyboardState: String?
 
     /// Set up, signed in to the mock provider, onboarding done.
     static let dictationReady = FreeFlowLaunchOptions()
@@ -191,6 +230,9 @@ struct FreeFlowLaunchOptions: Sendable {
         }
         if syntheticCapture {
             arguments += ["-FreeFlowUITestSyntheticCapture", "YES"]
+        }
+        if let keyboardState {
+            arguments += ["-FreeFlowUITestKeyboardState", keyboardState]
         }
         return arguments
     }
@@ -240,6 +282,16 @@ class FreeFlowUITestCase: XCTestCase {
             let label = app.label.trimmingCharacters(in: .whitespaces)
             attachText(app.debugDescription, named: "\(prefix)-hierarchy-\(label.isEmpty ? "SpringBoard" : label)")
         }
+    }
+
+    /// Attaches a screenshot under exactly `name`, for the review set
+    /// (e.g. `kb-recording-hold-dark`).
+    @MainActor
+    func captureNamed(_ name: String) {
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = name
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
     }
 
     func attachText(_ text: String, named name: String) {

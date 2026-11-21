@@ -261,10 +261,14 @@ PY
         | tail -n 120 || echo "Could not read the simulator log"
     echo "::endgroup::"
 
-    echo "::group::Simulator log lines from the FreeFlow keyboard process"
-    xcrun simctl spawn "$udid" log show --last 30m --info --style compact --predicate \
-        'process == "FreeFlowKeyboard"' \
-        | tail -n 80 || echo "Could not read the simulator log"
+    # The keyboard logs only state names, capture events, counts and
+    # rates, never text or audio: its status changes show the order of the
+    # states each dictation went through, and the capture lines say whether
+    # the audio came from WebKit's microphone or the synthetic tone.
+    echo "::group::The FreeFlow keyboard's own log (states and capture events)"
+    xcrun simctl spawn "$udid" log show --last 45m --info --style compact --predicate \
+        "subsystem == \"$keyboard_id\"" \
+        | tail -n 400 || echo "Could not read the simulator log"
     echo "::endgroup::"
 }
 

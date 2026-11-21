@@ -30,8 +30,11 @@ User-Agent and model names. It never holds audio, prompt or transcript text,
 or the Authorization header, because CI logs and artifacts in this
 repository are public.
 
+--latency adds a fixed delay to every transcription and chat response, like a
+real provider's, so UI tests can observe the keyboard's processing state.
+
 Usage:
-  mock-openai-server.py [--host 127.0.0.1] [--port 8765] [--log FILE]
+  mock-openai-server.py [--host 127.0.0.1] [--port 8765] [--log FILE] [--latency SECONDS]
   mock-openai-server.py --self-test
 """
 
@@ -454,6 +457,7 @@ class MockHandler(BaseHTTPRequestHandler):
         if wav["problem"]:
             raise RequestError(400, f"invalid WAV: {wav['problem']}")
 
+        self.server.simulate_latency()
         if scenario == "slow":
             time.sleep(self.server.slow_seconds)
         if scenario == "transcription-error":
@@ -497,6 +501,7 @@ class MockHandler(BaseHTTPRequestHandler):
         }
         if payload.get("stream"):
             raise RequestError(400, "streaming responses are not supported by the mock")
+        self.server.simulate_latency()
         if scenario == "slow":
             time.sleep(self.server.slow_seconds)
         if scenario == "chat-error":
@@ -533,7 +538,8 @@ class MockServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, log_path: str | None = None, slow_seconds: float = 3.0, quiet: bool = False):
+    def __init__(self, address, log_path: str | None = None, slow_seconds: float = 3.0, quiet: bool = False,
+                 latency: float = 0.0):
         super().__init__(address, MockHandler)
         self.lock = threading.Lock()
         self.requests: list[dict] = []
@@ -541,6 +547,11 @@ class MockServer(ThreadingHTTPServer):
         self.log_path = log_path
         self.slow_seconds = slow_seconds
         self.quiet = quiet
+        self.latency = latency
+
+    def simulate_latency(self) -> None:
+        if self.latency > 0:
+            time.sleep(self.latency)
 
     def record(self, meta: dict) -> None:
         with self.lock:
@@ -778,6 +789,14 @@ def run_self_test() -> int:
         call("GET", "/v1/models", headers=auth)
         status, parsed, _ = call("GET", f"/v1/debug/requests?since={last}")
         check("?since returns only newer requests", status == 200 and parsed["count"] == 1, parsed and parsed["count"])
+        server.latency = 0.3
+        started = time.monotonic()
+        status, parsed, _ = chat({"model": "m", "messages": messages})
+        check("--latency delays provider responses", status == 200 and time.monotonic() - started >= 0.3, status)
+        started = time.monotonic()
+        status, parsed, _ = call("GET", "/healthz")
+        check("--latency leaves the health check alone", status == 200 and time.monotonic() - started < 0.3, status)
+        server.latency = 0.0
         status, parsed, _ = call("POST", "/v1/debug/reset")
         check("reset clears the log", status == 200 and parsed["cleared"] > 20, parsed)
         status, parsed, _ = call("GET", "/v1/debug/requests")
@@ -803,12 +822,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--log", help="append one JSON line of request metadata per request to this file")
     parser.add_argument("--slow-seconds", type=float, default=3.0,
                         help="delay for the ui-test-key/slow scenario (default 3)")
+    parser.add_argument("--latency", type=float, default=0.0,
+                        help="delay added to every transcription and chat response (default 0)")
     parser.add_argument("--self-test", action="store_true", help="exercise every endpoint on a free port and exit")
     args = parser.parse_args(argv)
     if args.self_test:
         return run_self_test()
 
-    server = MockServer((args.host, args.port), log_path=args.log, slow_seconds=args.slow_seconds)
+    server = MockServer((args.host, args.port), log_path=args.log, slow_seconds=args.slow_seconds,
+                        latency=args.latency)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     host, port = server.server_address[:2]
     print(f"FreeFlow mock provider listening on http://{host}:{port}/v1", flush=True)

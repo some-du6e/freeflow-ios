@@ -183,6 +183,37 @@ struct KeyboardDriver {
         return KeyboardDisplayState(rawValue: status.textValue)
     }
 
+    /// The status element's state name and the text it shows, or nil when
+    /// the FreeFlow keyboard isn't showing.
+    var status: (state: String, text: String)? {
+        // One snapshot reads both, so short states aren't missed between queries.
+        guard let element = keyboardElement(FreeFlowAccessibilityID.Keyboard.status),
+              let snapshot = try? element.snapshot() else {
+            return nil
+        }
+        return ((snapshot.value as? String) ?? "", snapshot.label)
+    }
+
+    /// Polls the status until it is one of `targets`, noting every state it
+    /// passes through in `trace`. Returns the target reached, or nil.
+    func waitForStatus(
+        _ targets: Set<KeyboardDisplayState>,
+        timeout: TimeInterval,
+        trace: KeyboardStateTrace
+    ) -> KeyboardDisplayState? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let status {
+                trace.note(state: status.state, text: status.text)
+                if let state = KeyboardDisplayState(rawValue: status.state), targets.contains(state) {
+                    return state
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        } while Date() < deadline
+        return nil
+    }
+
     /// Waits until the keyboard reports one of `states`, returning it.
     func waitForDisplayState(_ states: Set<KeyboardDisplayState>, timeout: TimeInterval) -> KeyboardDisplayState? {
         let deadline = Date().addingTimeInterval(timeout)

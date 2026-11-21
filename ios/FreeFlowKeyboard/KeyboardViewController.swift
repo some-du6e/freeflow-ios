@@ -35,6 +35,13 @@ final class KeyboardViewController: UIInputViewController {
     private var panelHeightConstraint: NSLayoutConstraint?
     private var didScheduleHeightConstraint = false
 
+    /// The first start after the capture attaches can wait on WebKit's GPU
+    /// process launching cold (2.19 s was measured on CI simulators), so it
+    /// gets this first-audio watchdog; later starts use the usual
+    /// `WebAudioCapture.startTimeout` (2 s).
+    private static let firstStartTimeout: TimeInterval = 4
+    private var hasStartedSinceAttach = false
+
     private var wakeTask: Task<Void, Never>?
     private var pipelineTask: Task<Void, Never>?
     private let deleteRepeater = KeyboardDeleteRepeater()
@@ -99,6 +106,7 @@ final class KeyboardViewController: UIInputViewController {
         let capture = self.capture
         capture.delegate = self
         capture.attach(to: rootInputView)
+        hasStartedSinceAttach = false
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -331,6 +339,8 @@ final class KeyboardViewController: UIInputViewController {
             if let rootInputView {
                 capture.attach(to: rootInputView)
             }
+            capture.startTimeoutInterval = hasStartedSinceAttach ? WebAudioCapture.startTimeout : Self.firstStartTimeout
+            hasStartedSinceAttach = true
             capture.start()
         case .stopCapture:
             capture.stop()
