@@ -49,16 +49,22 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
             evidence: [app]
         )
 
-        // XCUIApplication.launch() gives Safari 30 s, which a busy CI
-        // simulator can use up before Safari even starts. Opening a page has
-        // no such limit. The mock leaves its health page out of its log.
+        // From the Home Screen, as a person would. XCUIApplication.launch()
+        // gives Safari 30 s, which a busy CI simulator can use up before
+        // Safari even starts. This also keeps Safari on its start page: on
+        // it, Safari kept the address edit across the switch to FreeFlow; in
+        // the one CI run that loaded a page first, it came back without it.
         let safari = XCUIApplication(bundleIdentifier: FreeFlowBundleID.safari)
-        let healthPage = try XCTUnwrap(URL(string: "\(MockProvider.origin)/healthz"))
-        XCUIDevice.shared.system.open(healthPage)
+        let springboard = XCUIApplication(bundleIdentifier: FreeFlowBundleID.springboard)
+        XCUIDevice.shared.press(.home)
+        let safariIcon = springboard.icons["Safari"]
+        try require(safariIcon.waitForExistence(timeout: 30), "The Home Screen shows no Safari icon",
+                    evidence: [springboard])
+        safariIcon.tap()
         try require(
             safari.wait(for: .runningForeground, timeout: 90),
-            "Safari didn't open the mock's health page within 90 s",
-            evidence: [safari]
+            "Safari didn't open within 90 s of a tap on its icon",
+            evidence: [safari, springboard]
         )
         let keyboard = KeyboardDriver(app: safari)
         let addressField = try focusSafariAddressField(safari, keyboard: keyboard)
@@ -89,7 +95,6 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
         // The responder-chain open, then FreeFlow on top.
         try tapInKeyboard(FreeFlowAccessibilityID.Keyboard.openApp, keyboard: keyboard)
         let openedAt = Date()
-        let springboard = XCUIApplication(bundleIdentifier: FreeFlowBundleID.springboard)
         var confirmedOpen = false
         let cameUp = waitUntil(timeout: 20) {
             let open = springboard.buttons["Open"]
@@ -161,8 +166,8 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
         try finishThroughInsertFromFreeFlow(safari: safari, keyboard: keyboard, trace: back)
 
         // FreeFlow made the provider calls, not the keyboard, which never
-        // recorded. (Safari's own requests to the mock, such as a favicon,
-        // aren't provider calls.)
+        // recorded. Only provider calls count: Safari never loads the mock,
+        // but nothing else should be checked against FreeFlow's User-Agent.
         let requests = try providerRequests()
         XCTAssertEqual(requests.transcriptions.count, 1, "transcription requests")
         XCTAssertEqual(requests.chats.count, 1, "cleanup requests")

@@ -176,8 +176,8 @@ jobs:
         run: |
           if [ -n "${KEYBOARD_LOG_PID:-}" ]; then
             kill "$KEYBOARD_LOG_PID" 2>/dev/null || true
-            echo "::group::The keyboard's capture sessions and state changes"
-            grep -E 'Capture session [0-9]+ (starting|audio graph started|finished)|\] status ' \
+            echo "::group::The keyboard's capture sessions, state changes and handoffs"
+            grep -E 'Capture session [0-9]+ (starting|audio graph started|finished|failed|stop timed out)|Capture start failed|:Keyboard\] ' \
               "$DIAGNOSTICS_PATH/keyboard.log" | cut -c1-220 || echo "(none logged)"
             echo "::endgroup::"
           fi

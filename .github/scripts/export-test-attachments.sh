@@ -40,6 +40,10 @@ for test in manifest:
             continue
         # XCTest appends "_<index>_<UUID>" to the name a test gave.
         name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}(?=\.[^.]+$)", "", suggested)
+        # XCTest's own attachments have names like 'Debug description for
+        # `"Address" TextField`', and actions/upload-artifact refuses the
+        # whole artifact over one quote, colon or similar in a file name.
+        name = re.sub(r'["`:<>|*?\\/\x00-\x1f]', "_", name)
         stem, extension = os.path.splitext(name)
         candidate, number = name, 2
         while candidate in taken:
