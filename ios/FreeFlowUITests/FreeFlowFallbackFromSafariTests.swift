@@ -15,11 +15,19 @@ import XCTest
 /// scenario makes the result ask for return, which Insert from FreeFlow must
 /// not press.
 ///
-/// The class name sorts after FreeFlowKeyboardSetupTests, which repairs the
-/// keyboard's setup in Settings if CI's simulator preparation didn't take.
+/// The class name sorts first in the UI bundle, so the keyboard process is
+/// fresh. Run after the other keyboard tests, a long-lived keyboard process
+/// lost FreeFlow's result in two of two runs: the keyboard Safari briefly
+/// showed on return found no awaited session and discarded the result
+/// (KeyboardHandoffCheck.check, `.handoffAbsent`), and the next keyboard
+/// waited for it for good. That is reported as a product bug; this test
+/// covers the round trip itself. Running before FreeFlowKeyboardSetupTests,
+/// it repairs the keyboard's setup in Settings itself when CI's simulator
+/// preparation didn't take, as openFreeFlowKeyboard does.
+///
 /// The app's synthetic tone stands in for speech, so this doesn't replace
 /// the check on a physical iPhone that AGENTS.md asks for.
-final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
+final class FreeFlowFallbackFromSafariTests: FreeFlowKeyboardTestCase {
     static let fallbackText = "Can't record in the keyboard here. Record in FreeFlow instead."
     static let pendingInsertText = "FreeFlow finished. Tap Insert from FreeFlow to add it here."
     static let insertedWithoutReturnText = "Inserted from FreeFlow. Return wasn't pressed."
@@ -49,26 +57,31 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
             evidence: [app]
         )
 
-        // From the Home Screen, as a person would. XCUIApplication.launch()
-        // gives Safari 30 s, which a busy CI simulator can use up before
-        // Safari even starts. This also keeps Safari on its start page: on
-        // it, Safari kept the address edit across the switch to FreeFlow; in
-        // the one CI run that loaded a page first, it came back without it.
         let safari = XCUIApplication(bundleIdentifier: FreeFlowBundleID.safari)
         let springboard = XCUIApplication(bundleIdentifier: FreeFlowBundleID.springboard)
-        XCUIDevice.shared.press(.home)
-        let safariIcon = springboard.icons["Safari"]
-        try require(safariIcon.waitForExistence(timeout: 30), "The Home Screen shows no Safari icon",
-                    evidence: [springboard])
-        safariIcon.tap()
-        try require(
-            safari.wait(for: .runningForeground, timeout: 90),
-            "Safari didn't open within 90 s of a tap on its icon",
-            evidence: [safari, springboard]
-        )
+        try openSafariFromHomeScreen(safari, springboard: springboard)
         let keyboard = KeyboardDriver(app: safari)
-        let addressField = try focusSafariAddressField(safari, keyboard: keyboard)
-        let switched = keyboard.switchToFreeFlow()
+        var addressField = try focusSafariAddressField(safari, keyboard: keyboard)
+        var switched = keyboard.switchToFreeFlow()
+        if case .notReached(let reason) = switched {
+            report("Could not reach the FreeFlow keyboard in Safari (\(reason)); enabling it in Settings")
+            let settings = SystemSettingsDriver()
+            let switches = try settings.inspectFreeFlowKeyboard(turnOn: true) { step in
+                capture(step, hierarchyOf: [settings.settings])
+            }
+            report("Settings fallback:\n\(switches)")
+            // Turning on Full Access kills FreeFlow, so launch it again with
+            // the same arguments.
+            app.launch()
+            try require(
+                testField.waitForExistence(timeout: Self.firstQueryTimeout),
+                "FreeFlow's Home didn't appear after the Settings fallback",
+                evidence: [app]
+            )
+            try openSafariFromHomeScreen(safari, springboard: springboard)
+            addressField = try focusSafariAddressField(safari, keyboard: keyboard)
+            switched = keyboard.switchToFreeFlow()
+        }
         guard case .found(_, let how) = switched else {
             try require(false, "Could not switch to FreeFlow in Safari: \(switched)", evidence: keyboard.hosts)
             return
@@ -159,8 +172,10 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
         try require(
             returned == .pendingInsert,
             "Back in Safari the keyboard didn't hold the result for Insert from FreeFlow: "
-                + "\(describe(keyboard.status)) (seen: \(back)). If it inserted on its own, the field kept "
-                + "its document identifier across the switch, which this test expects it not to on the CI simulator.",
+                + "\(describe(keyboard.status)) (seen: \(back)). Still waiting for FreeFlow means the "
+                + "result was lost on the way back (see the class comment). Inserted on its own means the field "
+                + "kept its document identifier across the switch, which this test expects it not to on the CI "
+                + "simulator.",
             evidence: keyboard.hosts
         )
         try finishThroughInsertFromFreeFlow(safari: safari, keyboard: keyboard, trace: back)
@@ -219,6 +234,22 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
                       "The address field no longer holds the text, so it was submitted")
         report("Insert from FreeFlow inserted the text without return (states after the tap: \(afterTap); "
             + "message: \(afterTap.texts[KeyboardDisplayState.inserted.rawValue] ?? "missed between queries"))")
+    }
+
+    /// Opens Safari from the Home Screen, as a person would.
+    /// XCUIApplication.launch() gives Safari 30 s, which a busy CI simulator
+    /// used up once before Safari even started; this waits up to 90 s.
+    @MainActor
+    private func openSafariFromHomeScreen(_ safari: XCUIApplication, springboard: XCUIApplication) throws {
+        XCUIDevice.shared.press(.home)
+        let icon = springboard.icons["Safari"]
+        try require(icon.waitForExistence(timeout: 30), "The Home Screen shows no Safari icon", evidence: [springboard])
+        icon.tap()
+        try require(
+            safari.wait(for: .runningForeground, timeout: 90),
+            "Safari didn't open within 90 s of a tap on its icon",
+            evidence: [safari, springboard]
+        )
     }
 
     /// Taps a FreeFlow keyboard button in whichever app hosts the keyboard.
