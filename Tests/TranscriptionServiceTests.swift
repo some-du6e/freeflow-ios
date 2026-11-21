@@ -68,5 +68,42 @@ enum TranscriptionServiceTests {
             validator: { _, _ in true }
         ) { fallbackApplied = $0 }
         TestSupport.expect(fallbackValid && fallbackApplied?.transcriptionAPIURL.isEmpty == true && fallbackApplied?.transcriptionAPIKey.isEmpty == true, "Empty transcription overrides preserve fallback semantics without a partial override")
+
+        testLogFormatsKeepProviderTextPrivate()
+    }
+
+    /// os_log output can't be read back in a test, so this checks the log formats in the
+    /// transcription sources, which the iOS app and keyboard compile too. Provider bodies are
+    /// never logged, error text and transcripts stay private, and the only public strings are
+    /// the generated recording file name and the error domain.
+    private static func testLogFormatsKeepProviderTextPrivate() {
+        let service = repositorySource("Sources/TranscriptionService.swift")
+        TestSupport.expect(!service.contains("body=%"), "A provider response body must not be logged")
+        let servicePublic = publicStringFields(in: service)
+        TestSupport.expect(
+            servicePublic == ["for %{public}@", "domain=%{public}@", "for %{public}@"],
+            "Public strings in shared logs need a privacy review (AGENTS.md); found \(servicePublic)"
+        )
+        let textCorePublic = publicStringFields(in: repositorySource("Sources/TranscriptTextCore.swift"))
+        TestSupport.expect(textCorePublic.isEmpty, "Transcripts must not be logged in public; found \(textCorePublic)")
+    }
+
+    /// Each `%{public}@` with the word in front of it, in source order.
+    private static func publicStringFields(in source: String) -> [String] {
+        let pattern = try! NSRegularExpression(pattern: #"(\w+[= ])?%\{public\}@"#)
+        return pattern.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap { match in
+            Range(match.range, in: source).map { String(source[$0]) }
+        }
+    }
+
+    /// Reads a repository file. The runner is built from Tests/, one level below the root.
+    private static func repositorySource(_ path: String) -> String {
+        let root = URL(fileURLWithPath: #filePath).absoluteURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        guard let source = try? String(contentsOf: root.appendingPathComponent(path), encoding: .utf8) else {
+            fatalError("Couldn't read \(path) under \(root.path)")
+        }
+        return source
     }
 }
