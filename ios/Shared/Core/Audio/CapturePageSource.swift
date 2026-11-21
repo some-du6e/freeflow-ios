@@ -220,7 +220,8 @@ function ffSyntheticSource(onBlock) {
   // callback runs. WebKit also never waits for a callback: one that runs more than a whole
   // period behind a later one ran after WebKit began refilling its buffer, so part of its audio
   // was lost or repeated. Callbacks queued behind a stall run back to back and measure the
-  // queue, so only those that ran at least half a period after the one before judge the lead.
+  // queue, so only those that ran at least half a period after the one before set the lead and
+  // its baseline.
   // Audio lost before the context renders it doesn't show here. Counts, and positions in the
   // 16 kHz audio sent, only. The synthetic source has no context to compare.
   function track(s, frames) {
@@ -235,7 +236,6 @@ function ffSyntheticSource(onBlock) {
     const time = s.ctx.currentTime;
     const lag = time * s.rate - s.received;
     if (s.callbacks === 1) { s.lagBase = lag; s.time0 = time; s.wall0 = now; }
-    s.lagBase = Math.min(s.lagBase, lag);
     s.stallMs = Math.max(s.stallMs, now - s.wall0 - (time - s.time0) * 1000);
     s.pending = s.pending.filter((p) => {
       if (p.lag - lag <= SP_FRAMES + 0.5) return true;
@@ -246,6 +246,7 @@ function ffSyntheticSource(onBlock) {
     s.pending.push({ lag, at: s.frames });
     if (s.pending.length > LATE_WINDOW) s.pending.shift();
     if (s.callbacks === 1 || (time - s.lastTime) * s.rate >= SP_FRAMES / 2) {
+      s.lagBase = Math.min(s.lagBase, lag);
       s.settled.push(lag);
       if (s.settled.length > SETTLED_CALLBACKS) s.settled.shift();
     }

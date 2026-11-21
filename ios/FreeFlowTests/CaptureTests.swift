@@ -93,9 +93,9 @@ final class CaptureTests: XCTestCase {
     }
 
     /// Real getUserMedia capture against WebKit's simulator mock microphone, which plays a 70 ms
-    /// 1500 Hz bip and a 70 ms 500 Hz bop 1 s apart, on a 2 s loop over a 150 Hz hum. On a busy
-    /// runner WebKit sometimes loses or repeats a stretch of that audio before the page sees it,
-    /// so this records long enough that one such gap still leaves a bip, a bop and a steady
+    /// 1500 Hz bip and a 70 ms 500 Hz bop 1 s apart, on a 2 s loop over a 150 Hz hum. WebKit
+    /// bends or repeats stretches of that audio before the page sees it (see MockRhythm), so
+    /// this records long enough that one such stretch still leaves a bip, a bop and a steady
     /// rhythm. FreeFlow's own part is exact: every frame the page sent is in the file.
     @MainActor
     func testMicrophoneCaptureRecordsWebKitsMockDevice() async throws {
@@ -161,8 +161,9 @@ final class CaptureTests: XCTestCase {
         let tones = ToneAnalysis.mockDeviceTones(in: wav.samples)
         let bursts = ToneAnalysis.mockDeviceBursts(in: wav.samples)
         let rhythm = ToneAnalysis.MockRhythm(bursts)
-        // WebKit's gaps so far all fell where the mock's 2 s loop wraps, so allow one per wrap.
-        let allowedGlitches = max(1, Int(audio.duration / 2))
+        // One stretch of WebKit's latency adaptation (see MockRhythm) bends at most two spacings,
+        // and its period of about 5 s leaves room for only one in a recording this short.
+        let allowedGlitches = 2
         let steady = rhythm.isSteady(allowingGlitches: allowedGlitches)
         let burstList = bursts.map(\.summary).joined(separator: " ")
         let pageCounts = audio.pageContinuity.map { "\($0.skippedCallbacks) skipped, \($0.lateCallbacks) late" } ?? "no report"
@@ -1033,19 +1034,25 @@ enum ToneAnalysis {
 
     /// How whole bursts keep the mock's rhythm. Successive bursts are a whole number of seconds
     /// apart: 1 s from a bip to a bop, 2 s when the burst between them is missing or cut short.
-    /// Audio WebKit drops or zero-fills before the page moves every burst after it by as long as
-    /// it lasted; CI's losses so far were about 70 ms each, at a bip, where the mock's 2 s loop
-    /// wraps. Late callbacks move nothing: when a stalled page catches up, WebKit hands its
-    /// queued callbacks its latest buffers again, which replaces the stalled stretch and can
-    /// repeat a burst tens of milliseconds apart. The mock never puts two bursts that close, so
-    /// those are left out of the timing and counted as repeats.
+    ///
+    /// The simulator's mock makes audio 1.6% too fast (896 frames per 20 ms tick at 44.1 kHz), so
+    /// WebKit's media stream buffer grows. At 100 ms, WebKit plays it 5% fast until it is under
+    /// 40 ms ("AudioSampleDataConverter::updateBufferedAmount high buffer"): about 1.3 s that
+    /// lose about 70 ms, every 5 s or so. That bends the spacings in and out of the stretch, and
+    /// raises a bip inside it to 1579 Hz, past the 1500 Hz detector, so that bip goes missing.
+    ///
+    /// Late callbacks move nothing: when a stalled page catches up, WebKit hands its queued
+    /// callbacks its latest buffers again, which replaces the stalled stretch and can repeat a
+    /// burst 85 ms apart. The mock never puts two bursts that close, so those are left out of
+    /// the timing and counted as repeats.
     struct MockRhythm {
         /// Spacings this close to a whole number of seconds have no gap in them.
         static let exactOffset = 0.02
         /// A spacing off by more than this lost more audio than a brief stall in WebKit would.
         static let maximumOffset = 0.3
-        /// Bursts closer than this to another are repeats: the mock's own are 1 s apart.
-        static let repeatSpacing = 0.5
+        /// Bursts closer than this to another are repeats: the mock's own are 1 s apart, and
+        /// repeats about 85 ms.
+        static let repeatSpacing = 0.2
 
         /// How far each spacing between timed bursts is from its whole number of seconds.
         let offsets: [Double]
