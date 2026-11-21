@@ -13,4 +13,11 @@ enum CaptureTiming {
     /// `KeyboardDictationMachine.stopBackstop`, with time left to finish the file, or the keyboard
     /// gives up on a recording that was about to arrive.
     static let stopTimeout: TimeInterval = 2.5
+
+    /// The longest a microphone session waits at stop. For the reason above, a longer wait
+    /// can't recover a real microphone's audio lost in a stall: it only appends repeats of
+    /// the audio after Done, which would show up as repeated words. A page that answers
+    /// within this keeps its final chunks. The longer `stopTimeout` applies only to the
+    /// DEBUG synthetic source, which does catch up.
+    static let microphoneStopTimeout: TimeInterval = 1.0
 }

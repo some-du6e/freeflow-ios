@@ -258,7 +258,11 @@ final class WebAudioCapture: NSObject {
         let id = session.id
         if session.hasStartedPage {
             sendPageCommand("stop", session: id)
-            session.stopDeadline = after(stopTimeoutInterval) { [weak self] in
+            // A microphone session waits at most CaptureTiming.microphoneStopTimeout; see there.
+            let wait = session.isSynthetic
+                ? stopTimeoutInterval
+                : min(stopTimeoutInterval, CaptureTiming.microphoneStopTimeout)
+            session.stopDeadline = after(wait) { [weak self] in
                 self?.stopTimeoutPassed(session: id)
             }
         } else {

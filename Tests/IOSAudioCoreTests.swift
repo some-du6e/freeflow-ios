@@ -1219,6 +1219,14 @@ enum IOSAudioCoreTests {
             CaptureTiming.stopTimeout >= 2,
             "The stop wait must outlast the 1.7 s page stalls seen on CI, got \(CaptureTiming.stopTimeout) s"
         )
+        TestSupport.expect(
+            CaptureTiming.microphoneStopTimeout <= CaptureTiming.stopTimeout,
+            "A microphone session must never wait longer than the default stop wait"
+        )
+        TestSupport.expect(
+            CaptureTiming.microphoneStopTimeout == 1.0,
+            "A microphone session keeps the 1 s stop wait: waiting longer only appends repeated audio after Done"
+        )
     }
 
     // MARK: Fixtures
