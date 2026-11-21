@@ -259,8 +259,8 @@ final class StoresTests: XCTestCase {
         let document = KeyboardDictationDocument(identifier: field, textBeforeCursor: "Synthetic before")
         let now = start.addingTimeInterval(30)
 
-        // Nothing awaited, with a fresh result: the read can be stale, so the
-        // result stays for the keyboard that does await it.
+        // Nothing awaited, with a fresh result: the check never deletes
+        // dictation text on one read that nobody wants it, so it stays.
         store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic orphan.", pressEnter: false))
         XCTAssertEqual(KeyboardHandoffCheck.check(store, ledger: ledger, now: now, document: document), .handoffAbsent)
         XCTAssertNotNil(defaults.object(forKey: "ios_pending_dictation"), "A fresh result stays")

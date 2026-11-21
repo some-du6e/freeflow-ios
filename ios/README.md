@@ -168,9 +168,14 @@ What stays on the phone:
   turned off or cleared in Settings.
 - **Fallback results:** text recorded in the app for the keyboard waits in
   the App Group until one of these happens:
-  - the keyboard inserts it;
+  - the keyboard inserts it, or you dismiss it, dictate again, or hide the
+    keyboard after it has offered the text for a couple of seconds;
   - you clear or turn off history;
-  - it expires (3 minutes) and FreeFlow next opens.
+  - it expires (3 minutes) and the keyboard next appears or FreeFlow next
+    opens.
+
+  A keyboard that iOS stops, or that shows for only a moment, leaves the text
+  for the next keyboard, which offers it again in whichever app it appears.
 - **Recordings:** deleted after transcription. After a failed upload the app
   keeps the file so you can try again, until you close the recorder.
 

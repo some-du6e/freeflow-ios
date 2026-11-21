@@ -929,14 +929,19 @@ struct KeyboardDictationMachine: Equatable {
         guard !isBusy else { return [] }
         // The check reads the result without removing it, so a keyboard that
         // iOS stops before it acts loses nothing. Every outcome but the offer
-        // below is final, so it lets go of the session and its result.
+        // below is final, so it lets go of the session and its result, before
+        // any insertion: a keyboard stopped in between then loses this result
+        // rather than leaving it for the next keyboard to insert a second
+        // time. The Insert from FreeFlow tap inserts first instead, since a
+        // result offered again still waits for another tap.
         var effects: [KeyboardDictationEffect] = [.stopAwaitingApp(sessionID: pending.sessionID)]
         let hasText = Self.hasContent(pending.text)
 
         guard pending.isFresh(now: now) else {
-            // Too old to insert on its own. End the wait now and say so,
-            // instead of waiting for a result that was already used up. The
-            // text stays in memory for Insert last, even with Keep History off.
+            // Too old to insert on its own. End the wait now and say so, and
+            // let go of the expired result, which the next check would
+            // otherwise find again. The text stays in memory for Insert last,
+            // even with Keep History off.
             if hasText {
                 effects.append(.rememberForInsertLast(text: pending.text, at: now))
             }
@@ -1040,16 +1045,22 @@ struct KeyboardDictationMachine: Equatable {
         case .waitingForApp(let waitingSessionID, let since, _) where waitingSessionID == sessionID:
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
             return []
-        case .starting, .recording, .processing, .pendingInsert:
-            // A result is already held or capture is under way; don't adopt.
+        case .pendingInsert(let pending, _) where pending.sessionID == sessionID:
+            // Still awaited with nothing stored: the offer holds the text.
+            return []
+        case .starting, .recording, .processing:
+            // Capture is under way; don't adopt.
             return []
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
-             .waitingForApp:
+             .waitingForApp, .pendingInsert:
             // Another keyboard process may have opened the app; count from
             // then when known, and let go of sessions that have long ended.
+            // An offer for another session ends, as on `.handoffAbsent`: its
+            // session is no longer awaited, so another keyboard used it or
+            // let it go and opened FreeFlow again. Insert last has its text.
             let since = openedAt ?? now
             guard now.timeIntervalSince(since) < Self.handoffWaitLimit else {
-                if isWaitingForApp { phase = restingPhase }
+                if handoffSessionID != nil { phase = restingPhase }
                 return [.stopAwaitingApp(sessionID: sessionID)]
             }
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)

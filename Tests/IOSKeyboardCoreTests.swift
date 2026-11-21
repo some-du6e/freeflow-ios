@@ -1204,10 +1204,25 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(status(shownAgain), .pendingInsert)
         TestSupport.expectEqual(status(redictates), .starting)
 
-        // handoffPending must not replace a held result.
+        // Still awaited with nothing stored, the offer stays: it holds the text.
         var held = waiting()
-        TestSupport.expectEqual(held.handle(.handoffPending(sessionID: sessionTwo, openedAt: nil), now: at(20)), [])
+        TestSupport.expectEqual(held.handle(.handoffPending(sessionID: sessionOne, openedAt: at(1)), now: at(20)), [])
         TestSupport.expectEqual(status(held), .pendingInsert)
+
+        // Another session awaited: another keyboard used this offer's session
+        // or let it go, and opened FreeFlow again. The offer ends, and this
+        // keyboard waits for the newer session as an idle one would, or lets
+        // go of it if it ended long ago.
+        var superseded = waiting()
+        TestSupport.expectEqual(superseded.handle(.handoffPending(sessionID: sessionTwo, openedAt: at(15)), now: at(20)), [])
+        TestSupport.expectEqual(superseded.phase, .waitingForApp(sessionID: sessionTwo, since: at(15), nextCheck: at(21)))
+        var supersededLongAgo = waiting()
+        let longAgo = at(20) - KeyboardDictationMachine.handoffWaitLimit
+        TestSupport.expectEqual(
+            supersededLongAgo.handle(.handoffPending(sessionID: sessionTwo, openedAt: longAgo), now: at(20)),
+            [.stopAwaitingApp(sessionID: sessionTwo)]
+        )
+        TestSupport.expectEqual(supersededLongAgo.phase, .idle)
 
         // insertPendingTapped does nothing outside pending-insert.
         var idle = readyMachine()
@@ -1253,6 +1268,10 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(arrivedHidden.handle(.appeared, now: at(30)), [])
         TestSupport.expectEqual(arrivedHidden.handle(.disappeared, now: at(31)), [])
         TestSupport.expectEqual(status(arrivedHidden), .pendingInsert)
+        // Shown again with no new check, it counts from that appearance.
+        TestSupport.expectEqual(arrivedHidden.handle(.appeared, now: at(40)), [])
+        TestSupport.expectEqual(arrivedHidden.handle(.disappeared, now: at(40) + grace), [letGo])
+        TestSupport.expectEqual(arrivedHidden.phase, .idle)
 
         // A press that can't record keeps the offer, as it keeps a wait for
         // the app, and only says why.
@@ -1542,10 +1561,9 @@ enum IOSKeyboardCoreTests {
             return here
         }
 
-        // Nothing awaited, with a fresh result: the read can be stale (a
-        // long-lived keyboard process read "nothing awaited" for a session it
-        // had opened itself), so the result stays for the keyboard that does
-        // await it.
+        // Nothing awaited, with a fresh result: it stays, since the check
+        // never deletes dictation text on one cross-process read that nobody
+        // wants it (KeyboardHandoffCheck). It goes once expired, below.
         let unawaitedFresh = SyntheticHandoffStore(awaited: nil, take: .fresh(pending))
         let freshCheck = KeyboardHandoffCheck.checkAndReport(
             unawaitedFresh, ledger: ledger, now: at(12), document: currentDocument()

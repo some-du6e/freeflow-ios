@@ -60,12 +60,16 @@ struct KeyboardHandoffCheckReport: Equatable {
 /// the next keyboard waiting for good.
 enum KeyboardHandoffCheck {
     /// The machine event for what the store holds now.
-    /// - Nothing awaited: `.handoffAbsent`. No keyboard can insert a result
-    ///   unless its session is awaited, but the read may be stale, so only a
-    ///   result that can never be inserted (expired or unreadable) is
-    ///   removed. A fresh one stays for the keyboard that does await it; the
-    ///   app's cleanup when it becomes active, a check after it expires, or
-    ///   Clear History removes it otherwise.
+    /// - Nothing awaited: `.handoffAbsent`. No keyboard inserts a result
+    ///   whose session isn't awaited, yet a fresh one stays: deleting
+    ///   dictation text on one cross-process read that nobody wants it is
+    ///   what this check never does. (CI's logs never caught such a read
+    ///   lagging; the lost results came from a destructive read in a keyboard
+    ///   process that iOS then stopped.) FreeFlow can leave such a result if
+    ///   a keyboard lets go of its session while the app is saving it. It
+    ///   goes once it can never be inserted, expired or unreadable: at a
+    ///   check after it expires, at the app's cleanup when it becomes active,
+    ///   or with Clear History.
     /// - A result for the awaited session, fresh or expired:
     ///   `.handoffResultArrived`, with the result left in the store until
     ///   the machine lets go of it. The machine checks freshness, so an

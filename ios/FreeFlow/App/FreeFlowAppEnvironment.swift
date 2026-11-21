@@ -62,12 +62,13 @@ struct FreeFlowAppEnvironment {
         settings.bool(FreeFlowAppSettingKey.dataSharingConsent, default: false)
     }
 
-    /// Clear History and turning Keep History off: deletes the history and a
-    /// handed-off result the keyboard hasn't picked up, which holds dictation
-    /// text too. When that result is the one the keyboard waits for, the
-    /// wait ends with it, so the keyboard doesn't keep showing "Waiting for
-    /// FreeFlow" for a result that's gone. A handoff that hasn't delivered
-    /// yet keeps its session.
+    /// Clear History and turning Keep History off: deletes the history and
+    /// any handed-off result still in the App Group, which holds dictation
+    /// text too, including one the keyboard offers with Insert from FreeFlow.
+    /// When that result is for the session the keyboard awaits, the wait
+    /// ends with it, so the keyboard's next check neither keeps showing
+    /// "Waiting for FreeFlow" for a result that's gone nor keeps offering
+    /// it. A handoff that hasn't delivered yet keeps its session.
     func clearHistory() {
         history.clear()
         pendingDictations.discardResultAndItsWait()

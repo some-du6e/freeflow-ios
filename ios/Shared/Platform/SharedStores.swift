@@ -132,8 +132,7 @@ final class PendingDictationStore {
 
     /// Replaces any earlier pending result.
     func save(_ pending: PendingDictation) {
-        guard let data = try? JSONEncoder().encode(pending) else { return }
-        defaults.set(data, forKey: Self.pendingDictationKey)
+        guard writeResult(pending) else { return }
         let session = KeyboardHandoffCheck.shortID(pending.sessionID)
         handoffLog.info("result saved for \(session, privacy: .public)")
     }
@@ -172,8 +171,9 @@ final class PendingDictationStore {
     }
 
     /// Removes the pending result only. The awaited session stays. The
-    /// removal is written even when this process doesn't see a result, so a
-    /// result it hasn't read yet goes too.
+    /// removal is written even when this process sees no result, so a caller
+    /// that removes without looking first, such as Clear History, also
+    /// removes one this process hasn't read yet.
     func discardResult() {
         let hadResult = defaults.object(forKey: Self.pendingDictationKey) != nil
         defaults.removeObject(forKey: Self.pendingDictationKey)
@@ -211,7 +211,10 @@ final class PendingDictationStore {
             return
         }
         guard !pending.isFresh(now: now), !pending.text.isEmpty || pending.pressEnter else { return }
-        save(PendingDictation(sessionID: pending.sessionID, createdAt: pending.createdAt, text: "", pressEnter: false))
+        let marker = PendingDictation(sessionID: pending.sessionID, createdAt: pending.createdAt, text: "", pressEnter: false)
+        guard writeResult(marker) else { return }
+        let session = KeyboardHandoffCheck.shortID(pending.sessionID)
+        handoffLog.info("expired result for \(session, privacy: .public) emptied; its marker stays")
     }
 
     /// Removes the pending result and the awaited session.
@@ -219,6 +222,13 @@ final class PendingDictationStore {
         defaults.removeObject(forKey: Self.pendingDictationKey)
         defaults.removeObject(forKey: Self.awaitedSessionKey)
         handoffLog.info("awaited session and stored result cleared")
+    }
+
+    /// Writes `pending` as the stored result, without logging.
+    private func writeResult(_ pending: PendingDictation) -> Bool {
+        guard let data = try? JSONEncoder().encode(pending) else { return false }
+        defaults.set(data, forKey: Self.pendingDictationKey)
+        return true
     }
 
     /// The stored result. An unreadable one is removed, including a value
