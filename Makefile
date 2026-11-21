@@ -57,7 +57,8 @@ IOS_PLISTS = \
 	ios/FreeFlow/Info.plist \
 	ios/FreeFlow/FreeFlow.entitlements \
 	ios/FreeFlowKeyboard/Info.plist \
-	ios/FreeFlowKeyboard/FreeFlowKeyboard.entitlements
+	ios/FreeFlowKeyboard/FreeFlowKeyboard.entitlements \
+	ios/Config/ExportOptions-TestFlight.plist
 IOS_DESTINATION ?= platform=iOS Simulator,name=iPhone 17
 IOS_RESULT_BUNDLE = $(BUILD_DIR)/ios/FreeFlow.xcresult
 IOS_XCODEBUILD = xcodebuild \
