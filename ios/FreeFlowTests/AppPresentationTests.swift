@@ -62,6 +62,44 @@ final class AppPresentationTests: XCTestCase {
         XCTAssertNil(HistoryEntryPresentation.routeTitle(nil))
     }
 
+    func testRawFallbackEntriesAreLabelledAsTheRawTranscript() {
+        // Cleanup or translation failed: the route says what was tried, but
+        // the text is the raw transcript.
+        var keyboardFallback = entry(raw: "synthetic raw", text: "synthetic raw", status: .rawFallback)
+        XCTAssertEqual(HistoryEntryPresentation.routeTitle(for: keyboardFallback), "Raw transcript (cleanup failed)")
+        keyboardFallback.route = .translation
+        XCTAssertEqual(
+            HistoryEntryPresentation.routeTitle(for: keyboardFallback),
+            "Untranslated raw transcript (translation failed)"
+        )
+
+        // The app's handoff status can't say it, so the stored flag does.
+        let handedOff = HistoryEntry(
+            createdAt: Date(timeIntervalSince1970: 1_900_000_000),
+            source: .app,
+            status: .handedOff,
+            rawTranscript: "synthetic raw",
+            text: "synthetic raw",
+            route: .translation,
+            usedRawFallback: true,
+            durationSeconds: 2
+        )
+        XCTAssertEqual(
+            HistoryEntryPresentation.routeTitle(for: handedOff),
+            "Untranslated raw transcript (translation failed)"
+        )
+        XCTAssertEqual(HistoryEntryPresentation.statusTitle(handedOff.status), "Sent to the keyboard")
+
+        // Without a fallback the route title is unchanged.
+        XCTAssertEqual(HistoryEntryPresentation.routeTitle(for: entry(raw: "um words", text: "Words.")), "Cleaned up")
+        var translated = entry(raw: "bonjour", text: "Hello.")
+        translated.route = .translation
+        XCTAssertEqual(HistoryEntryPresentation.routeTitle(for: translated), "Translated")
+        var empty = entry(raw: "", text: "", status: .nothingToInsert)
+        empty.route = .empty
+        XCTAssertNil(HistoryEntryPresentation.routeTitle(for: empty))
+    }
+
     func testHistoryCopyAndDisplayText() {
         let cleaned = entry(raw: "um synthetic words", text: "Synthetic words.")
         XCTAssertEqual(HistoryEntryPresentation.copyText(for: cleaned), "Synthetic words.")

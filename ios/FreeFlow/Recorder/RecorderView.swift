@@ -83,6 +83,7 @@ struct RecorderView: View {
         case .needsPermission, .requestingPermission: "Microphone Access"
         case .permissionDenied: "Microphone access is off"
         case .setupNeeded: "API key required"
+        case .consentNeeded: "Finish setting up FreeFlow"
         case .starting: "Starting..."
         case .recording: "Listening..."
         case .processing: "Transcribing..."
@@ -91,6 +92,8 @@ struct RecorderView: View {
                 "No speech detected"
             } else if outcome.handedOff {
                 "Swipe back to return to your app"
+            } else if outcome.keyboardStoppedWaiting {
+                "Not sent to the keyboard"
             } else {
                 "Perfect — FreeFlow is ready to go."
             }
@@ -101,13 +104,15 @@ struct RecorderView: View {
     private var statusSubtitle: String? {
         switch model.phase {
         case .idle:
-            nil
+            model.startsOnAppear ? nil : "FreeFlow starts recording when you tap Start Recording."
         case .needsPermission, .requestingPermission:
             "FreeFlow needs access to your microphone to record audio for transcription."
         case .permissionDenied:
             "Turn on Microphone for FreeFlow in Settings, then try again."
         case .setupNeeded:
             "Add your API key in FreeFlow's settings to dictate."
+        case .consentNeeded:
+            "FreeFlow records only after you agree, in setup, to send audio to your provider."
         case .starting, .recording:
             "Say anything — a sentence or two is perfect."
         case .processing:
@@ -117,6 +122,10 @@ struct RecorderView: View {
                 outcome.isNothingToInsert
                     ? "Swipe back to return to your app. There was nothing to insert."
                     : "The FreeFlow keyboard inserts the text when it reappears. If it doesn't, use Insert Last on the keyboard."
+            } else if outcome.keyboardStoppedWaiting {
+                outcome.isNothingToInsert
+                    ? "There was nothing to insert."
+                    : "The FreeFlow keyboard isn't waiting for this text. Copy it to paste it anywhere."
             } else {
                 outcome.isNothingToInsert ? "Nothing was added to the test field." : "Added to the test field."
             }
@@ -150,6 +159,8 @@ struct RecorderView: View {
             symbol("mic.fill")
         case .setupNeeded:
             symbol("key.fill")
+        case .consentNeeded:
+            symbol("lock.shield.fill")
         case .failed:
             symbol("exclamationmark.circle.fill", color: .red)
         case .finished(let outcome):
@@ -159,7 +170,9 @@ struct RecorderView: View {
                 resultCard(outcome)
             }
         case .idle:
-            EmptyView()
+            if !model.startsOnAppear {
+                symbol("mic.fill")
+            }
         }
     }
 
@@ -271,6 +284,17 @@ struct RecorderView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .accessibilityIdentifier("freeflow.recorder.openAppSettings")
+        case .consentNeeded:
+            Button {
+                app.closeRecorderAndReturnToSetup()
+            } label: {
+                Text("Back to Setup")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("freeflow.recorder.backToSetup")
         case .failed:
             Button {
                 model.retry()
@@ -284,7 +308,7 @@ struct RecorderView: View {
             .accessibilityIdentifier("freeflow.recorder.retry")
         case .finished(let outcome):
             if outcome.isNothingToInsert {
-                if !outcome.handedOff {
+                if model.mode == .inApp {
                     Button {
                         app.closeRecorder()
                         app.startDictation(mode: .inApp)
@@ -303,7 +327,22 @@ struct RecorderView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             }
-        case .processing, .idle:
+        case .idle:
+            // Opened by a link other than the keyboard's awaited session:
+            // nothing records until this tap.
+            if !model.startsOnAppear {
+                Button {
+                    model.start()
+                } label: {
+                    Label("Start Recording", systemImage: "mic.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .accessibilityIdentifier("freeflow.recorder.start")
+            }
+        case .processing:
             EmptyView()
         }
     }

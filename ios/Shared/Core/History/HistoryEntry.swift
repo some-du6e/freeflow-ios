@@ -32,6 +32,11 @@ struct HistoryEntry: Codable, Equatable, Identifiable {
     var rawTranscript: String
     var text: String
     var route: DictationRoute?
+    /// True when cleanup or translation failed and `text` is the raw
+    /// transcript, whatever `route` says. Optional so history saved before
+    /// this field existed still decodes (the key is simply missing); nil
+    /// means there was no fallback.
+    var usedRawFallback: Bool?
     var errorMessage: String?
     var durationSeconds: Double
 
@@ -43,6 +48,7 @@ struct HistoryEntry: Codable, Equatable, Identifiable {
         rawTranscript: String,
         text: String,
         route: DictationRoute? = nil,
+        usedRawFallback: Bool = false,
         errorMessage: String? = nil,
         durationSeconds: Double
     ) {
@@ -53,8 +59,18 @@ struct HistoryEntry: Codable, Equatable, Identifiable {
         self.rawTranscript = rawTranscript
         self.text = text
         self.route = route
+        // Stored only when set, so entries without a fallback encode exactly
+        // as before.
+        self.usedRawFallback = usedRawFallback ? true : nil
         self.errorMessage = errorMessage
         self.durationSeconds = durationSeconds
+    }
+
+    /// The text is the raw transcript because cleanup or translation failed.
+    /// Entries written before `usedRawFallback` existed still say so through
+    /// the keyboard's `.rawFallback` status.
+    var fellBackToRawTranscript: Bool {
+        usedRawFallback == true || status == .rawFallback
     }
 }
 
@@ -76,6 +92,7 @@ extension HistoryEntry {
             rawTranscript: result.rawTranscript,
             text: result.text,
             route: result.route,
+            usedRawFallback: result.usedRawFallback,
             durationSeconds: durationSeconds
         )
     }
@@ -83,9 +100,12 @@ extension HistoryEntry {
 
 extension HistoryEntry.Status {
     /// What an inserted result means: nothing to insert, the raw-transcript
-    /// fallback, or a normal insertion.
+    /// fallback, or a normal insertion. Both the keyboard and the app's
+    /// recorder use this, so "press enter" alone (return, but no text) is
+    /// `.nothingToInsert` whichever wrote it. Whitespace counts as no text,
+    /// as it does for the keyboard's insertion.
     static func forInsertion(of result: DictationResult) -> HistoryEntry.Status {
-        if result.text.isEmpty {
+        if result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .nothingToInsert
         }
         return result.usedRawFallback ? .rawFallback : .inserted

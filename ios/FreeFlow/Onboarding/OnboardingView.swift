@@ -12,7 +12,7 @@ struct OnboardingView: View {
         _model = StateObject(wrappedValue: OnboardingModel(environment: app.environment) { [weak app] in
             app?.completeOnboarding()
         })
-        _settingsModel = StateObject(wrappedValue: SettingsScreenModel(settings: app.environment.settings))
+        _settingsModel = StateObject(wrappedValue: SettingsScreenModel(environment: app.environment))
     }
 
     var body: some View {

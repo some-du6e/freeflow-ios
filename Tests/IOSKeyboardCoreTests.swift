@@ -40,6 +40,10 @@ enum IOSKeyboardCoreTests {
         testFallbackHandoffFlow()
         testHandoffResultInsertion()
         testHandoffFieldMatchGatesAutoInsert()
+        testExpiredHandoffResultEndsTheWait()
+        testHandoffCTANeverPressesReturn()
+        testUnconfirmedFieldWithNothingToInsertShowsNoCTA()
+        testHeldHandoffResultSurvivesForInsertLast()
         testPendingInsertExpiresAndDismisses()
         testHandoffWaitEnds()
         testBlockedPressesKeepWaitingForTheApp()
@@ -47,6 +51,7 @@ enum IOSKeyboardCoreTests {
         testInsertLastPrefersTheNewestSource()
         testRememberedTextCoversHistoryOff()
         testHandoffLedger()
+        testHandoffCheckReadsTheStore()
         testDisappearingCancelsCapture()
         testHapticsNeedFullAccess()
         testDisplayForEveryPhase()
@@ -136,7 +141,8 @@ enum IOSKeyboardCoreTests {
         at seconds: TimeInterval,
         raw: String,
         text: String,
-        route: DictationRoute? = .cleanup
+        route: DictationRoute? = .cleanup,
+        rawFallback: Bool = false
     ) -> KeyboardDictationHistoryDraft {
         KeyboardDictationHistoryDraft(
             createdAt: at(seconds),
@@ -145,8 +151,20 @@ enum IOSKeyboardCoreTests {
             text: text,
             route: route,
             errorMessage: nil,
-            durationSeconds: 2.5
+            durationSeconds: 2.5,
+            usedRawFallback: rawFallback
         )
+    }
+
+    /// The text a `.rememberForInsertLast` effect kept, as Insert last sees it.
+    private static func remembered(_ effects: [KeyboardDictationEffect]) -> KeyboardRememberedText? {
+        var remembered: KeyboardRememberedText?
+        for effect in effects {
+            if case .rememberForInsertLast(let text, let time) = effect {
+                remembered = KeyboardRememberedText(text: text, savedAt: time)
+            }
+        }
+        return remembered
     }
 
     private static func readyMachine(_ setup: KeyboardDictationSetup = ready) -> KeyboardDictationMachine {
@@ -618,8 +636,8 @@ enum IOSKeyboardCoreTests {
         let fallback = result("um hello there", rawFallback: true)
         let effects = machine.handle(.pipelineFinished(attempt: 1, result: fallback, document: document()), now: at(4))
         TestSupport.expect(
-            effects.contains(.recordHistory(draft(.rawFallback, at: 4, raw: "um hello there", text: "um hello there"))),
-            "A raw fallback must be recorded as rawFallback"
+            effects.contains(.recordHistory(draft(.rawFallback, at: 4, raw: "um hello there", text: "um hello there", rawFallback: true))),
+            "A raw fallback must be recorded as rawFallback, with the fallback flag for History"
         )
         TestSupport.expect(
             effects.contains(.rememberForInsertLast(text: "um hello there", at: at(4))),
@@ -880,14 +898,14 @@ enum IOSKeyboardCoreTests {
         ])
         TestSupport.expectEqual(machine.phase, .inserted(.handoff, until: at(13.5)))
 
+        // An expired result is never inserted, even into the same field; the
+        // wait ends with a message (testExpiredHandoffResultEndsTheWait).
         var stale = readyMachine()
         _ = stale.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
-        let old = PendingDictation(sessionID: sessionOne, createdAt: at(0), text: "Old.", pressEnter: false)
-        TestSupport.expectEqual(
-            stale.handle(.handoffResultArrived(old, expectedDocumentID: fieldA, document: document()), now: at(500)),
-            [.stopAwaitingApp]
-        )
-        TestSupport.expectEqual(stale.phase, .idle)
+        let old = PendingDictation(sessionID: sessionOne, createdAt: at(0), text: "Old.", pressEnter: true)
+        let staleEffects = stale.handle(.handoffResultArrived(old, expectedDocumentID: fieldA, document: document()), now: at(500))
+        TestSupport.expectEqual(insertions(staleEffects), [])
+        TestSupport.expectEqual(stale.phase, .error(message: KeyboardDictationMachine.handoffExpiredMessage, until: at(506)))
 
         var empty = readyMachine()
         let blank = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: " ", pressEnter: false)
@@ -921,7 +939,11 @@ enum IOSKeyboardCoreTests {
             .handoffResultArrived(pending, expectedDocumentID: nil, document: document(fieldA)),
             now: at(12)
         )
-        TestSupport.expectEqual(effects, [.stopAwaitingApp, .announce(KeyboardDictationDisplay.pendingInsertText)])
+        TestSupport.expectEqual(effects, [
+            .stopAwaitingApp,
+            .rememberForInsertLast(text: "Handed back.", at: at(12)),
+            .announce(KeyboardDictationDisplay.pendingInsertText),
+        ])
         TestSupport.expectEqual(unknownExpected.phase, .pendingInsert(pending, until: at(10) + PendingDictation.maxAge))
         let display = KeyboardDictationDisplay(machine: unknownExpected)
         TestSupport.expectEqual(display.status, .pendingInsert)
@@ -951,6 +973,156 @@ enum IOSKeyboardCoreTests {
         TestSupport.expect(!KeyboardDictationMachine.documentMatches(expected: fieldA, current: fieldB), "Different fields don't match")
         TestSupport.expect(!KeyboardDictationMachine.documentMatches(expected: nil, current: fieldA), "An unknown expected field never matches")
         TestSupport.expect(!KeyboardDictationMachine.documentMatches(expected: fieldA, current: nil), "An unknown current field never matches")
+    }
+
+    private static func testExpiredHandoffResultEndsTheWait() {
+        // `PendingDictationStore.take` reports `.expired` for an old result
+        // (it used to say "nothing yet"), and the keyboard hands it over like
+        // a fresh one. The wait must end at once, with a short message.
+        var machine = readyMachine()
+        _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: at(0)), now: at(0))
+        TestSupport.expectEqual(status(machine), .waitingForApp)
+
+        let expired = PendingDictation(sessionID: sessionOne, createdAt: at(20), text: "Kept for later.", pressEnter: false)
+        let now = at(20) + PendingDictation.maxAge + 1
+        let effects = machine.handle(
+            .handoffResultArrived(expired, expectedDocumentID: fieldA, document: document(fieldA)),
+            now: now
+        )
+        TestSupport.expectEqual(effects, [
+            .stopAwaitingApp,
+            .rememberForInsertLast(text: "Kept for later.", at: now),
+            .announce(KeyboardDictationMachine.handoffExpiredMessage),
+        ])
+        TestSupport.expect(!machine.isWaitingForApp, "An expired result must end the wait")
+        TestSupport.expectEqual(status(machine), .error)
+        TestSupport.expectEqual(text(machine), KeyboardDictationMachine.handoffExpiredMessage)
+        TestSupport.expectEqual(insertions(effects), [])
+
+        // Briefly: no more store checks, and the message clears like an error.
+        let until = now + KeyboardDictationMachine.errorDisplayDuration
+        TestSupport.expectEqual(machine.nextWakeUp, until)
+        TestSupport.expectEqual(machine.handle(.tick, now: until), [])
+        TestSupport.expectEqual(machine.phase, .idle)
+
+        // Insert last still has the text with Keep History off (no history).
+        TestSupport.expectEqual(KeyboardInsertLast.text(remembered: remembered(effects), history: []), "Kept for later.")
+
+        // A new keyboard process, not waiting yet, says the same.
+        var newProcess = readyMachine()
+        _ = newProcess.handle(.handoffResultArrived(expired, expectedDocumentID: nil, document: document()), now: now)
+        TestSupport.expectEqual(newProcess.phase, .error(message: KeyboardDictationMachine.handoffExpiredMessage, until: until))
+
+        // Without text (or the app's expired marker), it only says it expired.
+        var empty = readyMachine()
+        _ = empty.handle(.handoffPending(sessionID: sessionOne, openedAt: at(0)), now: at(0))
+        let marker = PendingDictation(sessionID: sessionOne, createdAt: at(20), text: "", pressEnter: false)
+        TestSupport.expectEqual(
+            empty.handle(.handoffResultArrived(marker, expectedDocumentID: fieldA, document: document()), now: now),
+            [.stopAwaitingApp, .announce(KeyboardDictationMachine.handoffExpiredEmptyMessage)]
+        )
+        TestSupport.expectEqual(empty.phase, .error(message: KeyboardDictationMachine.handoffExpiredEmptyMessage, until: until))
+    }
+
+    private static func testHandoffCTANeverPressesReturn() {
+        // "On my way press enter" in the app, then back in a field the
+        // keyboard can't confirm: the tap adds the text and never presses
+        // return, which could send it to the wrong recipient.
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "On my way.", pressEnter: true)
+        for expected in [fieldA, nil] as [UUID?] {
+            var machine = readyMachine()
+            _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
+            let arrival = machine.handle(
+                .handoffResultArrived(pending, expectedDocumentID: expected, document: document(fieldB)),
+                now: at(12)
+            )
+            TestSupport.expectEqual(insertions(arrival), [])
+            TestSupport.expectEqual(status(machine), .pendingInsert)
+
+            let tap = machine.handle(.insertPendingTapped(document: document(fieldB, before: "Hi")), now: at(20))
+            TestSupport.expectEqual(tap, [
+                .insert(TranscriptRouting.insertionText(for: "On my way.", precedingText: "Hi")),
+                .rememberForInsertLast(text: "On my way.", at: at(20)),
+                .announce("Inserted from FreeFlow. Return wasn't pressed."),
+            ])
+            TestSupport.expectEqual(machine.phase, .inserted(.handoffWithoutReturn, until: at(21.5)))
+        }
+
+        // The confirmed field still gets return.
+        var matched = readyMachine()
+        let auto = matched.handle(
+            .handoffResultArrived(pending, expectedDocumentID: fieldA, document: document(fieldA, before: "Hi")),
+            now: at(12)
+        )
+        TestSupport.expectEqual(insertions(auto), [TranscriptRouting.insertionText(for: "On my way.", precedingText: "Hi"), "\n"])
+        TestSupport.expectEqual(matched.phase, .inserted(.handoff, until: at(13.5)))
+    }
+
+    private static func testUnconfirmedFieldWithNothingToInsertShowsNoCTA() {
+        // Only "press enter", or nothing at all, in a field the keyboard
+        // can't confirm: nothing to insert, and no CTA that would only press
+        // return or do nothing.
+        let enterOnly = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "", pressEnter: true)
+        let blank = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: " ", pressEnter: false)
+        let cases: [(PendingDictation, KeyboardDictationMachine.NothingReason)] = [
+            (enterOnly, .returnNotPressed),
+            (blank, .emptyTranscript),
+        ]
+        for (pending, reason) in cases {
+            for (expected, current) in [(fieldA, fieldB), (nil, fieldA)] as [(UUID?, UUID?)] {
+                var machine = readyMachine()
+                _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: nil), now: at(0))
+                let effects = machine.handle(
+                    .handoffResultArrived(pending, expectedDocumentID: expected, document: document(current)),
+                    now: at(11)
+                )
+                TestSupport.expectEqual(effects, [.stopAwaitingApp, .announce(KeyboardDictationDisplay.nothingText(for: reason))])
+                TestSupport.expectEqual(
+                    machine.phase,
+                    .nothingToInsert(reason, until: at(11) + KeyboardDictationMachine.nothingToInsertDisplayDuration)
+                )
+                TestSupport.expect(!KeyboardDictationDisplay(machine: machine).pendingInsertVisible, "Nothing to insert must not offer the CTA")
+            }
+        }
+        TestSupport.expectEqual(
+            KeyboardDictationDisplay.nothingText(for: .returnNotPressed),
+            "Return wasn't pressed, since this may be a different field."
+        )
+    }
+
+    private static func testHeldHandoffResultSurvivesForInsertLast() {
+        // Keep History off, so the app wrote no history entry: the text held
+        // in pending-insert must still reach Insert last after Dismiss, after
+        // it expires, or after a new dictation.
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "Running late.", pressEnter: false)
+        var machine = readyMachine()
+        let arrival = machine.handle(
+            .handoffResultArrived(pending, expectedDocumentID: fieldA, document: document(fieldB)),
+            now: at(12)
+        )
+        let kept = remembered(arrival)
+        TestSupport.expectEqual(kept, KeyboardRememberedText(text: "Running late.", savedAt: at(12)))
+        let lastText = KeyboardInsertLast.text(remembered: kept, history: [])
+        TestSupport.expectEqual(lastText, "Running late.")
+
+        var dismissed = machine
+        TestSupport.expectEqual(dismissed.handle(.cancelTapped, now: at(20)), [])
+        TestSupport.expectEqual(
+            insertions(dismissed.handle(.insertLastTapped(text: lastText, document: document(fieldB, before: "Hi")), now: at(21))),
+            [TranscriptRouting.insertionText(for: "Running late.", precedingText: "Hi")]
+        )
+
+        var expired = machine
+        _ = expired.handle(.tick, now: at(10) + PendingDictation.maxAge)
+        TestSupport.expectEqual(expired.phase, .idle)
+        TestSupport.expectEqual(
+            insertions(expired.handle(.insertLastTapped(text: lastText, document: document(fieldB, before: "Hi")), now: at(300))),
+            [TranscriptRouting.insertionText(for: "Running late.", precedingText: "Hi")]
+        )
+
+        var redictated = machine
+        TestSupport.expectEqual(redictated.handle(.micPressBegan(documentID: fieldB), now: at(20)), [.startCapture])
+        TestSupport.expectEqual(status(redictated), .starting)
     }
 
     private static func testPendingInsertExpiresAndDismisses() {
@@ -983,7 +1155,8 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(tappedLate.handle(.insertPendingTapped(document: document(fieldB)), now: deadline.addingTimeInterval(5)), [])
         TestSupport.expectEqual(tappedLate.phase, .idle)
 
-        // Dismiss drops the CTA; the result stays in history for Insert last.
+        // Dismiss drops the CTA; the result was remembered for Insert last
+        // when it arrived (testHeldHandoffResultSurvivesForInsertLast).
         var dismissed = waiting()
         TestSupport.expectEqual(dismissed.handle(.cancelTapped, now: at(20)), [])
         TestSupport.expectEqual(dismissed.phase, .idle)
@@ -1189,6 +1362,88 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(reopened.openedAt(sessionID: sessionTwo), at(50))
     }
 
+    private static func testHandoffCheckReadsTheStore() {
+        // KeyboardViewController sends whatever `check` returns when it
+        // appears and while it waits, and runs `stopAwaiting` for
+        // `.stopAwaitingApp`.
+        let suite = "FreeFlowTests.IOSKeyboardCore.check.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            TestSupport.expect(false, "A test defaults suite must open")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let ledger = KeyboardHandoffLedger(defaults: defaults)
+        ledger.recordOpen(sessionID: sessionOne, documentID: fieldA, at: at(5))
+        let here = document(fieldA, before: "Hi")
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "From the app.", pressEnter: true)
+        var documentReads = 0
+        func currentDocument() -> KeyboardDictationDocument {
+            documentReads += 1
+            return here
+        }
+
+        // Nothing awaited: a leftover result can never be inserted, so it is
+        // discarded instead of keeping its text in the App Group.
+        let orphaned = SyntheticHandoffStore(awaited: nil, take: .fresh(pending))
+        TestSupport.expectEqual(
+            KeyboardHandoffCheck.check(orphaned, ledger: ledger, now: at(12), document: currentDocument()),
+            .handoffAbsent
+        )
+        TestSupport.expectEqual(orphaned.discards, 1)
+        TestSupport.expectEqual(orphaned.takes, [])
+
+        // Awaited, nothing yet: keep waiting, from when this keyboard opened the app.
+        let waiting = SyntheticHandoffStore(awaited: sessionOne, take: PendingDictationTake.none)
+        TestSupport.expectEqual(
+            KeyboardHandoffCheck.check(waiting, ledger: ledger, now: at(12), document: currentDocument()),
+            .handoffPending(sessionID: sessionOne, openedAt: at(5))
+        )
+        TestSupport.expectEqual(waiting.takes, [sessionOne])
+        TestSupport.expectEqual(waiting.discards, 0)
+        TestSupport.expectEqual(documentReads, 0)
+
+        // A fresh result and an expired one both reach the machine, with the
+        // field the app was opened from; an expired one is never "pending".
+        for taken in [PendingDictationTake.fresh(pending), .expired(pending)] {
+            let store = SyntheticHandoffStore(awaited: sessionOne, take: taken)
+            TestSupport.expectEqual(
+                KeyboardHandoffCheck.check(store, ledger: ledger, now: at(12), document: currentDocument()),
+                .handoffResultArrived(pending, expectedDocumentID: fieldA, document: here)
+            )
+            TestSupport.expectEqual(store.discards, 0)
+        }
+        TestSupport.expectEqual(documentReads, 2)
+
+        // A session another keyboard process opened: no open time or field.
+        let elsewhere = SyntheticHandoffStore(awaited: sessionTwo, take: PendingDictationTake.none)
+        TestSupport.expectEqual(
+            KeyboardHandoffCheck.check(elsewhere, ledger: ledger, now: at(12), document: currentDocument()),
+            .handoffPending(sessionID: sessionTwo, openedAt: nil)
+        )
+
+        // Stopping the wait forgets the session and drops any result.
+        let stopping = SyntheticHandoffStore(awaited: sessionOne, take: .fresh(pending))
+        KeyboardHandoffCheck.stopAwaiting(stopping)
+        TestSupport.expect(stopping.awaitedSessionID == nil, "Nothing is awaited after stopping")
+        TestSupport.expectEqual(stopping.discards, 1)
+
+        // What the keyboard then shows: an expired result ends the wait at
+        // once, and nothing awaited returns it to rest.
+        var machine = readyMachine()
+        _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: at(5)), now: at(5))
+        let expired = SyntheticHandoffStore(awaited: sessionOne, take: .expired(pending))
+        let late = at(10) + PendingDictation.maxAge + 1
+        _ = machine.handle(KeyboardHandoffCheck.check(expired, ledger: ledger, now: late, document: currentDocument()), now: late)
+        TestSupport.expect(!machine.isWaitingForApp, "An expired result must end the wait")
+        TestSupport.expectEqual(status(machine), .error)
+
+        var forgotten = readyMachine()
+        _ = forgotten.handle(.handoffPending(sessionID: sessionOne, openedAt: at(5)), now: at(5))
+        let cleared = SyntheticHandoffStore(awaited: nil, take: PendingDictationTake.none)
+        _ = forgotten.handle(KeyboardHandoffCheck.check(cleared, ledger: ledger, now: at(6), document: currentDocument()), now: at(6))
+        TestSupport.expectEqual(forgotten.phase, .idle)
+    }
+
     // MARK: Lifecycle and feedback
 
     private static func testDisappearingCancelsCapture() {
@@ -1282,6 +1537,8 @@ enum IOSKeyboardCoreTests {
         texts += [
             KeyboardDictationMachine.fieldChangedMessage,
             KeyboardDictationMachine.fieldChangedReturnMessage,
+            KeyboardDictationMachine.handoffExpiredMessage,
+            KeyboardDictationMachine.handoffExpiredEmptyMessage,
             KeyboardDictationMachine.interruptedMessage,
             KeyboardDictationMachine.fileErrorMessage,
             KeyboardDictationMachine.stopTimedOutMessage,
@@ -1316,6 +1573,14 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(
             KeyboardDebugDisplayState.machine(for: "nothing-to-insert:noHistory", now: t0)?.phase,
             .nothingToInsert(.noHistory, until: .distantFuture)
+        )
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: "inserted:handoffWithoutReturn", now: t0)?.phase,
+            .inserted(.handoffWithoutReturn, until: .distantFuture)
+        )
+        TestSupport.expectEqual(
+            KeyboardDebugDisplayState.machine(for: "nothing-to-insert:returnNotPressed", now: t0)?.phase,
+            .nothingToInsert(.returnNotPressed, until: .distantFuture)
         )
         TestSupport.expectEqual(
             KeyboardDebugDisplayState.machine(for: "error:Quota: exceeded", now: t0)?.phase,
@@ -1485,5 +1750,38 @@ enum IOSKeyboardCoreTests {
 
         let notInserted = draft(.notInserted, at: 5, raw: "keep me", text: "Keep me.").makeEntry()
         TestSupport.expectEqual(HistoryLog.latestInsertableText(in: [notInserted]), "Keep me.")
+        TestSupport.expectEqual(notInserted.usedRawFallback, nil)
+        TestSupport.expect(!notInserted.fellBackToRawTranscript, "A cleaned-up entry is not a raw fallback")
+
+        // The fallback flag reaches History even when the status can't say it.
+        let fallbackNotInserted = draft(.notInserted, at: 6, raw: "raw words", text: "raw words", rawFallback: true).makeEntry()
+        TestSupport.expectEqual(fallbackNotInserted.usedRawFallback, true)
+        TestSupport.expect(fallbackNotInserted.fellBackToRawTranscript, "History must know the text is the raw transcript")
+    }
+}
+
+/// An in-memory `KeyboardHandoffStore` that answers `take` with a canned
+/// result and records what the keyboard asked of it.
+private final class SyntheticHandoffStore: KeyboardHandoffStore {
+    var awaitedSessionID: UUID?
+    private var nextTake: PendingDictationTake
+    private(set) var takes: [UUID] = []
+    private(set) var discards = 0
+
+    init(awaited: UUID?, take: PendingDictationTake) {
+        awaitedSessionID = awaited
+        nextTake = take
+    }
+
+    func take(sessionID: UUID, now: Date) -> PendingDictationTake {
+        takes.append(sessionID)
+        let taken = nextTake
+        nextTake = PendingDictationTake.none
+        return taken
+    }
+
+    func discardResult() {
+        discards += 1
+        nextTake = PendingDictationTake.none
     }
 }

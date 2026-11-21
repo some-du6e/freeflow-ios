@@ -8,7 +8,7 @@ final class AppSettingsModelTests: XCTestCase {
     func testTogglesAndPickersRoundTrip() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
 
         model.preserveExactWording = true
         model.instructionExecutionGuardEnabled = false
@@ -17,7 +17,7 @@ final class AppSettingsModelTests: XCTestCase {
         model.transcriptionLanguage = "de"
         model.outputLanguage = "Japanese"
 
-        let reopened = SettingsScreenModel(settings: stores.settings)
+        let reopened = SettingsScreenModel(environment: stores.environment())
         XCTAssertTrue(reopened.preserveExactWording)
         XCTAssertFalse(reopened.instructionExecutionGuardEnabled)
         XCTAssertFalse(reopened.pressEnterVoiceCommandEnabled)
@@ -56,10 +56,103 @@ final class AppSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testClearHistoryDropsAHandedOffResultAndEndsItsWait() {
+        // Both Clear History buttons call app.clearHistory(). The keyboard's
+        // pending result is dictation text too, and once it is gone the
+        // keyboard must stop waiting rather than show "Waiting for FreeFlow"
+        // for minutes.
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let app = FreeFlowAppModel(environment: stores.environment())
+        deliverSyntheticHandoff(in: stores)
+
+        app.clearHistory()
+
+        assertNothingIsLeftForTheKeyboard(stores)
+    }
+
+    @MainActor
+    func testTurningKeepHistoryOffDropsAHandedOffResultAndEndsItsWait() {
+        // The model the Settings screen builds, so the toggle's wiring is
+        // what's tested.
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let model = SettingsScreenModel(environment: stores.environment())
+        deliverSyntheticHandoff(in: stores)
+
+        model.historyEnabled = false
+
+        XCTAssertFalse(stores.settings.historyEnabled)
+        assertNothingIsLeftForTheKeyboard(stores)
+    }
+
+    @MainActor
+    func testClearingHistoryKeepsAHandoffThatHasNotDelivered() {
+        // The keyboard waits for a session the app hasn't answered yet, with
+        // nothing stored or only another session's result: that wait stays.
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let app = FreeFlowAppModel(environment: stores.environment())
+        let session = UUID()
+        stores.pendingDictations.awaitedSessionID = session
+
+        app.clearHistory()
+        XCTAssertEqual(stores.pendingDictations.awaitedSessionID, session)
+
+        stores.pendingDictations.save(PendingDictation(sessionID: UUID(), createdAt: Date(), text: "Synthetic other.", pressEnter: false))
+        app.clearHistory()
+        XCTAssertNil(stores.defaults.object(forKey: PendingDictationStore.pendingDictationKey), "Another session's text goes")
+        XCTAssertEqual(stores.pendingDictations.awaitedSessionID, session)
+    }
+
+    /// A handoff the app delivered and the keyboard hasn't picked up: its
+    /// History entry, the saved result, and the keyboard still waiting.
+    @MainActor
+    private func deliverSyntheticHandoff(in stores: AppTestStores) {
+        let session = UUID()
+        stores.history.append(HistoryEntry(
+            createdAt: Date(),
+            source: .app,
+            status: .handedOff,
+            rawTranscript: "synthetic raw",
+            text: "Synthetic handoff.",
+            durationSeconds: 1
+        ))
+        stores.pendingDictations.awaitedSessionID = session
+        stores.pendingDictations.save(PendingDictation(sessionID: session, createdAt: Date(), text: "Synthetic handoff.", pressEnter: true))
+        XCTAssertEqual(stores.history.load().count, 1)
+    }
+
+    /// No dictation text is left, and the keyboard's next check ends its
+    /// wait (`.handoffAbsent` returns it to rest).
+    @MainActor
+    private func assertNothingIsLeftForTheKeyboard(
+        _ stores: AppTestStores,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(stores.history.load(), [], file: file, line: line)
+        XCTAssertNil(
+            stores.defaults.object(forKey: PendingDictationStore.pendingDictationKey),
+            "The handed-off text is gone",
+            file: file,
+            line: line
+        )
+        XCTAssertNil(stores.pendingDictations.awaitedSessionID, "Nothing else will arrive for it", file: file, line: line)
+        let next = KeyboardHandoffCheck.check(
+            stores.pendingDictations,
+            ledger: KeyboardHandoffLedger(defaults: stores.defaults),
+            now: Date(),
+            document: KeyboardDictationDocument(identifier: nil, textBeforeCursor: nil)
+        )
+        XCTAssertEqual(next, .handoffAbsent, "The keyboard stops waiting", file: file, line: line)
+    }
+
+    @MainActor
     func testAutoDetectAndSameAsSpokenRemoveTheirKeys() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
 
         model.transcriptionLanguage = "fr"
         model.outputLanguage = "Spanish"
@@ -75,7 +168,7 @@ final class AppSettingsModelTests: XCTestCase {
         let stores = AppTestStores()
         defer { stores.tearDown() }
 
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
         model.reload()
 
         XCTAssertTrue(stores.storedKeys.isEmpty, "Stored: \(stores.storedKeys)")
@@ -89,7 +182,7 @@ final class AppSettingsModelTests: XCTestCase {
     func testModelsAreTrimmedAndBlankMeansDefault() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
 
         model.setTranscriptionModel("  whisper-large-v3-turbo  ")
         model.setPostProcessingModel("custom/llm-model")
@@ -105,7 +198,7 @@ final class AppSettingsModelTests: XCTestCase {
         XCTAssertNil(stores.defaults.object(forKey: FreeFlowSettingKey.transcriptionModel))
         XCTAssertEqual(model.effectiveTranscriptionModel, FreeFlowSettingDefaults.transcriptionModel)
         XCTAssertEqual(
-            SettingsScreenModel(settings: stores.settings).effectivePostProcessingModel,
+            SettingsScreenModel(environment: stores.environment()).effectivePostProcessingModel,
             "custom/llm-model"
         )
     }
@@ -114,7 +207,7 @@ final class AppSettingsModelTests: XCTestCase {
     func testSystemPromptFollowsTheMacOSCommitRules() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
         let day = Date(timeIntervalSince1970: 1_795_000_000) // 2026-11-18 UTC
 
         XCTAssertFalse(model.isUsingCustomSystemPrompt)
@@ -131,7 +224,7 @@ final class AppSettingsModelTests: XCTestCase {
         let stamp = SettingsScreenModel.dayFormatter.string(from: day)
         XCTAssertEqual(stores.defaults.string(forKey: FreeFlowAppSettingKey.customSystemPromptLastModified), stamp)
         XCTAssertFalse(model.hasNewerDefaultSystemPrompt, "Saved after the default prompt's date")
-        XCTAssertEqual(SettingsScreenModel(settings: stores.settings).systemPromptEditorText, "Clean up the synthetic transcript.")
+        XCTAssertEqual(SettingsScreenModel(environment: stores.environment()).systemPromptEditorText, "Clean up the synthetic transcript.")
 
         stores.defaults.set("2020-01-01", forKey: FreeFlowAppSettingKey.customSystemPromptLastModified)
         model.reload()
@@ -150,12 +243,12 @@ final class AppSettingsModelTests: XCTestCase {
     func testVocabularyIsTrimmedAndReadBack() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
 
         model.setCustomVocabulary("  Synthetica, Flowbert;\nZyx  ")
 
         XCTAssertEqual(stores.defaults.string(forKey: FreeFlowSettingKey.customVocabulary), "Synthetica, Flowbert;\nZyx")
-        XCTAssertEqual(SettingsScreenModel(settings: stores.settings).customVocabulary, "Synthetica, Flowbert;\nZyx")
+        XCTAssertEqual(SettingsScreenModel(environment: stores.environment()).customVocabulary, "Synthetica, Flowbert;\nZyx")
         XCTAssertEqual(CustomVocabularyScreen.entries(in: model.customVocabulary), ["Synthetica", "Flowbert", "Zyx"])
 
         model.setCustomVocabulary(" ")
@@ -166,7 +259,7 @@ final class AppSettingsModelTests: XCTestCase {
     func testVoiceMacrosAddEditAndDelete() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
         let first = VoiceMacro(command: "synthetic signature", payload: "Sent from a test.")
         let second = VoiceMacro(command: "synthetic address", payload: "1 Example Way")
 
@@ -179,7 +272,7 @@ final class AppSettingsModelTests: XCTestCase {
         XCTAssertEqual(stores.settings.voiceMacros, [edited, second])
         let decoded = VoiceMacroCodec.decode(stores.defaults.data(forKey: FreeFlowSettingKey.voiceMacros))
         XCTAssertEqual(decoded, [edited, second])
-        XCTAssertEqual(SettingsScreenModel(settings: stores.settings).voiceMacros, [edited, second])
+        XCTAssertEqual(SettingsScreenModel(environment: stores.environment()).voiceMacros, [edited, second])
 
         model.deleteVoiceMacros(at: IndexSet(integer: 0))
         XCTAssertEqual(stores.settings.voiceMacros, [second])
@@ -191,7 +284,7 @@ final class AppSettingsModelTests: XCTestCase {
     func testDailyLimitWarningUsesTheCooldownKey() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
-        let model = SettingsScreenModel(settings: stores.settings)
+        let model = SettingsScreenModel(environment: stores.environment())
         let modelID = "synthetic/cooldown-model-\(UUID().uuidString)"
         let key = LLMCooldownManager.udKey(for: modelID)
         let now = Date(timeIntervalSince1970: 1_900_000_000)
