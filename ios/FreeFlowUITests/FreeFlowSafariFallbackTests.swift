@@ -36,7 +36,8 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
         let app = launchFreeFlow(options)
         defer {
             // Leave the keyboard able to record for whatever runs next, even
-            // a single test run on its own.
+            // in a run of this test alone. (A failed XCTAssert stops the test
+            // without running this; the next launch's reset clears it then.)
             let cleanup = XCUIApplication()
             cleanup.launchArguments = ["-FreeFlowUITestCaptureUnavailable", "NO"]
             cleanup.launch()
@@ -48,8 +49,17 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
             evidence: [app]
         )
 
+        // XCUIApplication.launch() gives Safari 30 s, which a busy CI
+        // simulator can use up before Safari even starts. Opening a page has
+        // no such limit. The mock leaves its health page out of its log.
         let safari = XCUIApplication(bundleIdentifier: FreeFlowBundleID.safari)
-        safari.launch()
+        let healthPage = try XCTUnwrap(URL(string: "\(MockProvider.origin)/healthz"))
+        XCUIDevice.shared.system.open(healthPage)
+        try require(
+            safari.wait(for: .runningForeground, timeout: 90),
+            "Safari didn't open the mock's health page within 90 s",
+            evidence: [safari]
+        )
         let keyboard = KeyboardDriver(app: safari)
         let addressField = try focusSafariAddressField(safari, keyboard: keyboard)
         let switched = keyboard.switchToFreeFlow()
@@ -150,11 +160,13 @@ final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
         )
         try finishThroughInsertFromFreeFlow(safari: safari, keyboard: keyboard, trace: back)
 
-        // FreeFlow made the provider calls, not the keyboard, which never recorded.
+        // FreeFlow made the provider calls, not the keyboard, which never
+        // recorded. (Safari's own requests to the mock, such as a favicon,
+        // aren't provider calls.)
         let requests = try providerRequests()
         XCTAssertEqual(requests.transcriptions.count, 1, "transcription requests")
         XCTAssertEqual(requests.chats.count, 1, "cleanup requests")
-        for request in requests.all {
+        for request in requests.transcriptions + requests.chats {
             let agent = request["user_agent"] as? String ?? ""
             XCTAssertTrue(agent.hasPrefix("FreeFlow/"), "Expected FreeFlow's own User-Agent, got \(agent)")
         }
