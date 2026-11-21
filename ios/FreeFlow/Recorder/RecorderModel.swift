@@ -24,6 +24,9 @@ struct RecorderOutcome: Equatable {
     var usedRawFallback: Bool
     /// Saved for the keyboard rather than inserted in the app.
     var handedOff: Bool
+    /// A keyboard handoff the keyboard is no longer waiting for (or never
+    /// was), so the result was saved nowhere and is only shown, with Copy.
+    var keyboardStoppedWaiting = false
 
     /// Nothing to type: no text and no "press enter".
     var isNothingToInsert: Bool {
@@ -65,7 +68,15 @@ enum RecorderPhase: Equatable {
         case .recording: "recording"
         case .processing: "processing"
         case .finished(let outcome):
-            outcome.isNothingToInsert ? "nothing-to-insert" : (outcome.handedOff ? "handed-off" : "done")
+            if outcome.isNothingToInsert {
+                "nothing-to-insert"
+            } else if outcome.handedOff {
+                "handed-off"
+            } else if outcome.keyboardStoppedWaiting {
+                "not-handed-off"
+            } else {
+                "done"
+            }
         case .failed: "error"
         }
     }
@@ -155,8 +166,9 @@ final class AppBackgroundWork {
 }
 
 /// Records with the app's microphone permission and runs the shared pipeline.
-/// For a keyboard handoff it saves the result for the keyboard and writes a
-/// `.handedOff` history entry; otherwise it inserts into the test field.
+/// For a keyboard handoff it saves the result for the keyboard, while the
+/// keyboard still waits for that session, and writes a `.handedOff` history
+/// entry; otherwise it inserts into the test field.
 @MainActor
 final class RecorderModel: ObservableObject, Identifiable {
     static let startFailedMessage = "Couldn't start recording. Try again."
@@ -175,6 +187,10 @@ final class RecorderModel: ObservableObject, Identifiable {
 
     /// Set by the app model for in-app recordings.
     var onInsertIntoTestField: (@MainActor (String, Bool) -> Void)?
+    /// Whether recording starts as soon as the recorder appears. Only a tap
+    /// in FreeFlow or the keyboard's awaited session start it; a recorder
+    /// any other `freeflow://` link opened waits idle for its Start button.
+    let startsOnAppear: Bool
 
     private let dependencies: RecorderDependencies
     private var recorder: AppAudioRecording?
@@ -191,9 +207,10 @@ final class RecorderModel: ObservableObject, Identifiable {
     /// recorder closes, so late callbacks from an older one are ignored.
     private var generation = 0
 
-    init(mode: RecorderMode, dependencies: RecorderDependencies) {
+    init(mode: RecorderMode, dependencies: RecorderDependencies, startsOnAppear: Bool) {
         self.mode = mode
         self.dependencies = dependencies
+        self.startsOnAppear = startsOnAppear
     }
 
     /// Recording, processing, or waiting on the permission prompt.
@@ -210,12 +227,32 @@ final class RecorderModel: ObservableObject, Identifiable {
         phase == .starting || phase == .recording
     }
 
-    /// Starts once, when the recorder first appears. Both the keyboard
-    /// fallback and "try without the keyboard" record right away.
+    /// Called when the recorder appears. Starts once if `startsOnAppear`;
+    /// otherwise it stays idle until `start()`.
     func startIfNeeded() {
+        guard startsOnAppear else { return }
+        start()
+    }
+
+    /// The idle recorder's Start button, and the start on appear.
+    func start() {
         guard !hasStarted, !isClosed else { return }
         hasStarted = true
         begin()
+    }
+
+    /// The keyboard reopened the app for this recorder's session and is
+    /// still waiting for it: start a recorder that was waiting for a tap, or
+    /// give a failed recording another try.
+    func resumeForAwaitedSession() {
+        switch phase {
+        case .idle:
+            start()
+        case .failed:
+            retry()
+        default:
+            break
+        }
     }
 
     /// The keyboard asked again while this recorder was busy; deliver this
@@ -456,7 +493,7 @@ final class RecorderModel: ObservableObject, Identifiable {
 
         let status: HistoryEntry.Status
         switch mode {
-        case .handoff(let sessionID):
+        case .handoff(let sessionID) where dependencies.awaitedSessionID() == sessionID:
             // Saved even when empty, so the waiting keyboard learns that
             // there is nothing to insert instead of waiting for a result.
             dependencies.savePendingDictation(PendingDictation(
@@ -467,12 +504,20 @@ final class RecorderModel: ObservableObject, Identifiable {
             ))
             outcome.handedOff = true
             status = outcome.isNothingToInsert ? .nothingToInsert : .handedOff
+        case .handoff:
+            // The keyboard stopped waiting (or never asked), so no keyboard
+            // would ever take a saved result and its text would linger in the
+            // App Group. Only show it, with Copy; nothing presses return.
+            outcome.keyboardStoppedWaiting = true
+            outcome.pressEnter = false
+            status = outcome.isNothingToInsert ? .nothingToInsert : .notInserted
         case .inApp:
             if outcome.isNothingToInsert {
                 status = .nothingToInsert
             } else if let insert = onInsertIntoTestField {
                 insert(result.text, result.pressEnter)
-                status = result.usedRawFallback ? .rawFallback : .inserted
+                // The keyboard's rule: return alone inserted no text.
+                status = .forInsertion(of: result)
             } else {
                 status = .notInserted
             }
@@ -491,6 +536,7 @@ final class RecorderModel: ObservableObject, Identifiable {
             rawTranscript: result?.rawTranscript ?? "",
             text: result?.text ?? "",
             route: result?.route,
+            usedRawFallback: result?.usedRawFallback ?? false,
             errorMessage: errorMessage,
             durationSeconds: recordedDuration
         )

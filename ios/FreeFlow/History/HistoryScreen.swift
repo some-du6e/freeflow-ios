@@ -32,6 +32,20 @@ enum HistoryEntryPresentation {
         }
     }
 
+    /// The caption under an entry. When cleanup or translation failed, the
+    /// route still says which was tried, but the text is the raw transcript,
+    /// so say that instead of "Cleaned up" or "Translated" (macOS wording).
+    static func routeTitle(for entry: HistoryEntry) -> String? {
+        if entry.fellBackToRawTranscript {
+            switch entry.route {
+            case .translation: return "Untranslated raw transcript (translation failed)"
+            case .cleanup: return "Raw transcript (cleanup failed)"
+            case .macro, .verbatim, .empty, nil: break
+            }
+        }
+        return routeTitle(entry.route)
+    }
+
     /// The text Copy puts on the clipboard: the final text, else the raw
     /// transcript, else nothing.
     static func copyText(for entry: HistoryEntry) -> String? {
@@ -102,7 +116,7 @@ struct HistoryScreen: View {
             }
             .confirmationDialog("Clear all history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
                 Button("Clear History", role: .destructive) {
-                    app.environment.history.clear()
+                    app.environment.clearHistory()
                     reload()
                 }
                 Button("Cancel", role: .cancel) {}
@@ -185,7 +199,7 @@ struct HistoryEntryRow: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
-                if let route = HistoryEntryPresentation.routeTitle(entry.route) {
+                if let route = HistoryEntryPresentation.routeTitle(for: entry) {
                     Text(route)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)

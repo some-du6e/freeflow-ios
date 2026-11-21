@@ -62,6 +62,15 @@ struct FreeFlowAppEnvironment {
         settings.bool(FreeFlowAppSettingKey.dataSharingConsent, default: false)
     }
 
+    /// Clear History and turning Keep History off: deletes the history and a
+    /// handed-off result the keyboard hasn't picked up, which holds dictation
+    /// text too. The awaited session stays, so a handoff still recording
+    /// delivers as usual.
+    func clearHistory() {
+        history.clear()
+        pendingDictations.discardResult()
+    }
+
     /// Whether a usable API key is stored, and why not when the keychain
     /// itself can't be read.
     func apiKeyState() -> HomeSetupChecklist.APIKeyState {

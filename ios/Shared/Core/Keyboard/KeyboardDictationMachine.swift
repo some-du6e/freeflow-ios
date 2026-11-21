@@ -79,6 +79,8 @@ struct KeyboardDictationHistoryDraft: Equatable {
     var route: DictationRoute?
     var errorMessage: String?
     var durationSeconds: Double
+    /// Cleanup or translation failed and `text` is the raw transcript.
+    var usedRawFallback = false
 
     func makeEntry(id: UUID = UUID()) -> HistoryEntry {
         HistoryEntry(
@@ -89,6 +91,7 @@ struct KeyboardDictationHistoryDraft: Equatable {
             rawTranscript: rawTranscript,
             text: text,
             route: route,
+            usedRawFallback: usedRawFallback,
             errorMessage: errorMessage,
             durationSeconds: durationSeconds
         )
@@ -121,7 +124,8 @@ enum KeyboardDictationEvent: Equatable {
     case pipelineFinished(attempt: Int, result: DictationResult, document: KeyboardDictationDocument)
     /// `message` is `DictationPipeline.userFacingMessage(for:isOnline:)`.
     case pipelineFailed(attempt: Int, message: String)
-    /// `PendingDictationStore.take` returned the app's result.
+    /// `PendingDictationStore.take` returned the app's result, fresh or
+    /// expired; the machine checks freshness itself.
     /// `expectedDocumentID` is the field the keyboard opened the app from,
     /// if this process knows it; the result is auto-inserted only when the
     /// current field matches it.
@@ -202,6 +206,10 @@ struct KeyboardDictationMachine: Equatable {
 
     static let fieldChangedMessage = "The text field changed, so nothing was inserted. Tap Insert last to add it."
     static let fieldChangedReturnMessage = "The text field changed, so return wasn't pressed."
+    /// The app's result was older than `PendingDictation.maxAge` when the
+    /// keyboard took it.
+    static let handoffExpiredMessage = "The FreeFlow result expired. Tap Insert last to add it."
+    static let handoffExpiredEmptyMessage = "The FreeFlow result expired."
     static let interruptedMessage = "Recording stopped unexpectedly. Try again."
     static let fileErrorMessage = "Couldn't save the recording. Try again."
     static let stopTimedOutMessage = "The recording didn't finish. Try again."
@@ -244,12 +252,18 @@ struct KeyboardDictationMachine: Equatable {
         case returnOnly
         case lastDictation
         case handoff
+        /// The Insert from FreeFlow CTA added a result that ended in "press
+        /// enter". The CTA inserts text only, so return wasn't pressed.
+        case handoffWithoutReturn
     }
 
     enum NothingReason: String, Equatable, CaseIterable {
         case emptyTranscript
         case noAudio
         case noHistory
+        /// The app's result was only "press enter", and the keyboard couldn't
+        /// confirm it's the field the user dictated for.
+        case returnNotPressed
     }
 
     enum FallbackReason: String, Equatable, CaseIterable {
@@ -591,8 +605,9 @@ struct KeyboardDictationMachine: Equatable {
             phase = restingPhase
             return [.stopAwaitingApp]
         case .fallbackAvailable, .inserted, .nothingToInsert, .error, .pendingInsert:
-            // Dismiss. A pending handoff result stays in history (the app
-            // wrote it), so Insert last can still recover it.
+            // Dismiss. A held handoff result was remembered for Insert last
+            // when it arrived, so Insert last can still add it, even with
+            // Keep History off.
             phase = restingPhase
             return []
         case .idle, .setupNeeded:
@@ -731,7 +746,8 @@ struct KeyboardDictationMachine: Equatable {
             text: result.text,
             route: result.route,
             errorMessage: nil,
-            durationSeconds: audio.duration
+            durationSeconds: audio.duration,
+            usedRawFallback: result.usedRawFallback
         )
     }
 
@@ -776,14 +792,8 @@ struct KeyboardDictationMachine: Equatable {
         if result.pressEnter {
             effects.append(.insert("\n"))
         }
-        // The same statuses as the pipeline's HistoryEntry.Status.forInsertion:
-        // return alone inserted no text.
-        let status: HistoryEntry.Status
-        if !hasText {
-            status = .nothingToInsert
-        } else {
-            status = result.usedRawFallback ? .rawFallback : .inserted
-        }
+        // The rule the app's recorder uses too: return alone inserted no text.
+        let status = HistoryEntry.Status.forInsertion(of: result)
         effects.append(.recordHistory(historyDraft(status, result: result, audio: audio, now: now)))
         if hasText {
             effects.append(.rememberForInsertLast(text: result.text, at: now))
@@ -835,23 +845,39 @@ struct KeyboardDictationMachine: Equatable {
         guard !isBusy else { return [] }
         // The result was taken from the store, so stop awaiting it either way.
         var effects: [KeyboardDictationEffect] = [.stopAwaitingApp]
+        let hasText = Self.hasContent(pending.text)
 
         guard pending.isFresh(now: now) else {
-            switch phase {
-            case .waitingForApp, .pendingInsert:
-                phase = restingPhase
-            default:
-                break
+            // Too old to insert on its own. End the wait now and say so,
+            // instead of waiting for a result that was already used up. The
+            // text stays in memory for Insert last, even with Keep History off.
+            if hasText {
+                effects.append(.rememberForInsertLast(text: pending.text, at: now))
             }
+            let message = hasText ? Self.handoffExpiredMessage : Self.handoffExpiredEmptyMessage
+            phase = .error(message: message, until: now + Self.errorDisplayDuration)
+            effects.append(announcement)
             return effects
         }
 
         // Auto-insert only into the same field the keyboard opened the app
-        // from. Otherwise hold the result and wait for an explicit tap, so the
-        // text never lands in a field the user didn't dictate into.
+        // from, and only there press return for "press enter".
         if Self.documentMatches(expected: expectedDocumentID, current: document.identifier) {
-            return effects + performHandoffInsertion(pending, document: document, now: now)
+            return effects + performHandoffInsertion(pending, pressEnter: pending.pressEnter, document: document, now: now)
         }
+        // A field the keyboard can't confirm. With no text there is nothing to
+        // offer: return alone could submit a field the user didn't dictate
+        // for.
+        guard hasText else {
+            let reason: NothingReason = pending.pressEnter ? .returnNotPressed : .emptyTranscript
+            phase = .nothingToInsert(reason, until: now + Self.nothingToInsertDisplayDuration)
+            effects.append(announcement)
+            return effects
+        }
+        // Hold the text for an explicit tap, so it never lands in a field the
+        // user didn't dictate into. Remember it now: after Dismiss, expiry or
+        // a new dictation, Insert last can still add it.
+        effects.append(.rememberForInsertLast(text: pending.text, at: now))
         phase = .pendingInsert(pending, until: pending.createdAt + PendingDictation.maxAge)
         effects.append(announcement)
         return effects
@@ -866,19 +892,23 @@ struct KeyboardDictationMachine: Equatable {
             phase = restingPhase
             return []
         }
-        // The tap is the user's consent to insert into the current field.
-        return performHandoffInsertion(pending, document: document, now: now)
+        // The tap is the user's consent to insert the text into the current
+        // field, but not to press return in it.
+        return performHandoffInsertion(pending, pressEnter: false, document: document, now: now)
     }
 
-    /// Inserts a handoff result and moves to `inserted`. Sets the phase before
-    /// reading `announcement` so the announcement reflects the new state.
+    /// Inserts a handoff result and moves to `inserted`. `pressEnter` is
+    /// whether to press return after the text; only a confirmed field gets
+    /// it. Sets the phase before reading `announcement` so the announcement
+    /// reflects the new state.
     private mutating func performHandoffInsertion(
         _ pending: PendingDictation,
+        pressEnter: Bool,
         document: KeyboardDictationDocument,
         now: Date
     ) -> [KeyboardDictationEffect] {
         let hasText = Self.hasContent(pending.text)
-        guard hasText || pending.pressEnter else {
+        guard hasText || pressEnter else {
             phase = .nothingToInsert(.emptyTranscript, until: now + Self.nothingToInsertDisplayDuration)
             return [announcement]
         }
@@ -890,13 +920,21 @@ struct KeyboardDictationMachine: Equatable {
                 precedingText: document.textBeforeCursor
             )))
         }
-        if pending.pressEnter {
+        if pressEnter {
             effects.append(.insert("\n"))
         }
         if hasText {
             effects.append(.rememberForInsertLast(text: pending.text, at: now))
         }
-        phase = .inserted(hasText ? .handoff : .returnOnly, until: now + Self.insertedDisplayDuration)
+        let kind: InsertedKind
+        if !hasText {
+            kind = .returnOnly
+        } else if pending.pressEnter && !pressEnter {
+            kind = .handoffWithoutReturn
+        } else {
+            kind = .handoff
+        }
+        phase = .inserted(kind, until: now + Self.insertedDisplayDuration)
         effects.append(announcement)
         return effects
     }

@@ -15,7 +15,7 @@ struct SettingsScreen: View {
 
     init(environment: FreeFlowAppEnvironment) {
         _model = StateObject(wrappedValue: SettingsScreenModel(settings: environment.settings) {
-            environment.history.clear()
+            environment.clearHistory()
         })
         _apiForm = StateObject(wrappedValue: APIKeyFormModel(environment: environment))
     }
@@ -54,7 +54,7 @@ struct SettingsScreen: View {
         }
         .confirmationDialog("Clear all history?", isPresented: $isConfirmingClearHistory, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) {
-                app.environment.history.clear()
+                app.environment.clearHistory()
             }
             Button("Cancel", role: .cancel) {}
         } message: {

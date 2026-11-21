@@ -42,14 +42,15 @@ extension FreeFlowRootView {
     /// comes. Close them first, then open the recorder.
     fileprivate func openRecorder(for url: URL) {
         guard FreeFlowURLRoute(url: url) != nil else { return }
-        guard app.activeRecorder == nil, FreeFlowPresentation.isPresenting else {
-            app.handle(url: url)
-            return
+        let closesPresentations = app.activeRecorder == nil && FreeFlowPresentation.isPresenting
+        if closesPresentations {
+            app.closeOtherPresentations()
         }
-        app.closeOtherPresentations()
         Task {
-            await FreeFlowPresentation.wait(timeout: 2) { !FreeFlowPresentation.isPresenting }
-            app.handle(url: url)
+            if closesPresentations {
+                await FreeFlowPresentation.wait(timeout: 2) { !FreeFlowPresentation.isPresenting }
+            }
+            await app.handle(url: url)
         }
     }
 }

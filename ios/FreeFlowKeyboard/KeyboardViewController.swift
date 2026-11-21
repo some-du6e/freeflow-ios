@@ -353,7 +353,10 @@ final class KeyboardViewController: UIInputViewController {
             openContainingApp(sessionID: sessionID)
         case .stopAwaitingApp:
             if hasFullAccess {
+                // Nothing awaits a result now, so none can ever be inserted:
+                // drop any the app left, rather than keep its text around.
                 PendingDictationStore.shared.awaitedSessionID = nil
+                PendingDictationStore.shared.discardResult()
             }
         case .checkForAppResult:
             checkForAppResult()
@@ -524,16 +527,22 @@ final class KeyboardViewController: UIInputViewController {
         guard hasFullAccess, !machine.isBusy else { return }
         let store = PendingDictationStore.shared
         guard let sessionID = store.awaitedSessionID else {
+            // No keyboard waits for a result, so a leftover one can never be
+            // inserted; don't keep its text in the App Group.
+            store.discardResult()
             send(.handoffAbsent)
             return
         }
-        if let pending = store.take(sessionID: sessionID, now: Date()) {
+        switch store.take(sessionID: sessionID, now: Date()) {
+        case .fresh(let pending), .expired(let pending):
+            // The machine checks freshness: an expired result ends the wait
+            // with a message instead of being inserted.
             send(.handoffResultArrived(
                 pending,
                 expectedDocumentID: handoffLedger.documentID(sessionID: sessionID),
                 document: currentDocument()
             ))
-        } else {
+        case .none:
             send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
         }
     }

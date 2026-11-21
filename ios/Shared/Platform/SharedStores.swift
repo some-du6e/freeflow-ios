@@ -45,8 +45,9 @@ final class HistoryStore {
         write(HistoryLog.appending(entry, to: readEntries()))
     }
 
-    /// Deletes the history file. The app should call this when the user
-    /// turns Keep history off, so no dictation text stays on the device.
+    /// Deletes the history file. The app calls this, together with
+    /// `PendingDictationStore.discardResult()`, when the user clears history
+    /// or turns Keep history off, so no dictation text stays on the device.
     func clear() {
         lock.lock()
         defer { lock.unlock() }
@@ -127,30 +128,60 @@ final class PendingDictationStore {
         defaults.set(data, forKey: Self.pendingDictationKey)
     }
 
-    /// Returns and removes the result for `sessionID` if it is fresh. A
-    /// stale result for `sessionID` is removed and not returned. A result
-    /// for another session is left alone while fresh and removed once
+    /// Removes and returns the result for `sessionID`: `.fresh`, or
+    /// `.expired` once it is older than `PendingDictation.maxAge`, so the
+    /// keyboard can tell an expired result from one that hasn't arrived. A
+    /// result for another session is left alone while fresh and removed once
     /// stale, so a `take` after `PendingDictation.maxAge` always drops it.
-    func take(sessionID: UUID, now: Date) -> PendingDictation? {
-        guard let data = defaults.data(forKey: Self.pendingDictationKey) else { return nil }
-        guard let pending = try? JSONDecoder().decode(PendingDictation.self, from: data) else {
-            defaults.removeObject(forKey: Self.pendingDictationKey)
-            return nil
-        }
+    func take(sessionID: UUID, now: Date) -> PendingDictationTake {
+        guard let pending = loadResult() else { return .none }
         guard pending.sessionID == sessionID else {
             if !pending.isFresh(now: now) {
-                defaults.removeObject(forKey: Self.pendingDictationKey)
+                discardResult()
             }
-            return nil
+            return .none
         }
+        discardResult()
+        return pending.isFresh(now: now) ? .fresh(pending) : .expired(pending)
+    }
+
+    /// Removes the pending result only. The awaited session stays, so a
+    /// handoff that is still recording delivers as usual.
+    func discardResult() {
         defaults.removeObject(forKey: Self.pendingDictationKey)
-        return pending.isFresh(now: now) ? pending : nil
+    }
+
+    /// Clears out what no keyboard can still use, for the app to run when it
+    /// becomes active. A result for a session the keyboard isn't waiting
+    /// for (or an unreadable one) is removed. An expired result for the
+    /// session it is waiting for loses its text but stays as a marker, so the
+    /// keyboard's next `take` still reports `.expired` and the keyboard stops
+    /// waiting instead of waiting for a result that's gone. Never touches the
+    /// awaited session.
+    func discardUnclaimedResult(now: Date) {
+        guard defaults.object(forKey: Self.pendingDictationKey) != nil else { return }
+        guard let pending = loadResult(), pending.sessionID == awaitedSessionID else {
+            discardResult()
+            return
+        }
+        guard !pending.isFresh(now: now), !pending.text.isEmpty || pending.pressEnter else { return }
+        save(PendingDictation(sessionID: pending.sessionID, createdAt: pending.createdAt, text: "", pressEnter: false))
     }
 
     /// Removes the pending result and the awaited session.
     func clear() {
         defaults.removeObject(forKey: Self.pendingDictationKey)
         defaults.removeObject(forKey: Self.awaitedSessionKey)
+    }
+
+    /// The stored result. An unreadable one is removed.
+    private func loadResult() -> PendingDictation? {
+        guard let data = defaults.data(forKey: Self.pendingDictationKey) else { return nil }
+        guard let pending = try? JSONDecoder().decode(PendingDictation.self, from: data) else {
+            discardResult()
+            return nil
+        }
+        return pending
     }
 }
 

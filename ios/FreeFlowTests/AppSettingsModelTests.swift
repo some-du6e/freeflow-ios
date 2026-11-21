@@ -56,6 +56,41 @@ final class AppSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testClearingHistoryAlsoDropsAHandedOffResult() {
+        // Keep History off and both Clear History buttons call this. The
+        // keyboard's pending result is dictation text too.
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let environment = stores.environment()
+        let session = UUID()
+        let created = Date(timeIntervalSince1970: 1_900_000_000)
+        stores.history.append(HistoryEntry(
+            createdAt: created,
+            source: .app,
+            status: .handedOff,
+            rawTranscript: "synthetic raw",
+            text: "Synthetic handoff.",
+            durationSeconds: 1
+        ))
+        stores.pendingDictations.awaitedSessionID = session
+        stores.pendingDictations.save(PendingDictation(sessionID: session, createdAt: created, text: "Synthetic handoff.", pressEnter: false))
+        XCTAssertEqual(stores.history.load().count, 1)
+
+        environment.clearHistory()
+
+        XCTAssertEqual(stores.history.load(), [])
+        XCTAssertNil(stores.defaults.object(forKey: PendingDictationStore.pendingDictationKey))
+        XCTAssertEqual(stores.pendingDictations.awaitedSessionID, session, "A handoff still recording keeps its session")
+
+        // Turning Keep History off goes through the same call.
+        stores.pendingDictations.save(PendingDictation(sessionID: session, createdAt: created, text: "Synthetic handoff.", pressEnter: false))
+        let model = SettingsScreenModel(settings: stores.settings) { environment.clearHistory() }
+        model.historyEnabled = false
+        XCTAssertNil(stores.defaults.object(forKey: PendingDictationStore.pendingDictationKey))
+        XCTAssertFalse(stores.settings.historyEnabled)
+    }
+
+    @MainActor
     func testAutoDetectAndSameAsSpokenRemoveTheirKeys() {
         let stores = AppTestStores()
         defer { stores.tearDown() }

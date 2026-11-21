@@ -124,8 +124,8 @@ final class StoresTests: XCTestCase {
 
         store.save(pending)
         XCTAssertNotNil(defaults.data(forKey: "ios_pending_dictation"))
-        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(10)), pending)
-        XCTAssertNil(store.take(sessionID: session, now: start.addingTimeInterval(11)))
+        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(10)), .fresh(pending))
+        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(11)), PendingDictationTake.none)
         XCTAssertNil(defaults.data(forKey: "ios_pending_dictation"))
     }
 
@@ -135,30 +135,105 @@ final class StoresTests: XCTestCase {
         let pending = PendingDictation(sessionID: UUID(), createdAt: start, text: "Synthetic handoff.", pressEnter: false)
         store.save(pending)
 
-        XCTAssertNil(store.take(sessionID: UUID(), now: start.addingTimeInterval(10)))
+        XCTAssertEqual(store.take(sessionID: UUID(), now: start.addingTimeInterval(10)), PendingDictationTake.none)
         XCTAssertNotNil(defaults.data(forKey: "ios_pending_dictation"), "A fresh result for another session stays")
 
-        XCTAssertNil(store.take(sessionID: UUID(), now: start.addingTimeInterval(PendingDictation.maxAge + 1)))
+        XCTAssertEqual(store.take(sessionID: UUID(), now: start.addingTimeInterval(PendingDictation.maxAge + 1)), PendingDictationTake.none)
         XCTAssertNil(defaults.data(forKey: "ios_pending_dictation"), "A stale result is removed")
     }
 
-    func testStalePendingResultIsDiscarded() throws {
+    func testStalePendingResultIsReportedAsExpired() throws {
+        // Not the same answer as "not delivered yet": the keyboard must stop
+        // waiting instead of showing "Waiting for FreeFlow" for minutes.
         let defaults = try makeDefaults()
         let store = PendingDictationStore(defaults: defaults)
         let session = UUID()
-        store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic handoff.", pressEnter: false))
+        let pending = PendingDictation(sessionID: session, createdAt: start, text: "Synthetic handoff.", pressEnter: false)
+        store.save(pending)
 
-        XCTAssertNil(store.take(sessionID: session, now: start.addingTimeInterval(PendingDictation.maxAge + 1)))
-        XCTAssertNil(defaults.data(forKey: "ios_pending_dictation"))
+        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(PendingDictation.maxAge + 1)), .expired(pending))
+        XCTAssertNil(defaults.data(forKey: "ios_pending_dictation"), "An expired result is removed too")
+        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(PendingDictation.maxAge + 2)), PendingDictationTake.none)
+    }
+
+    func testUnreadablePendingResultIsRemoved() throws {
+        let defaults = try makeDefaults()
+        let store = PendingDictationStore(defaults: defaults)
+        defaults.set(Data("not json".utf8), forKey: "ios_pending_dictation")
+
+        XCTAssertEqual(store.take(sessionID: UUID(), now: start), PendingDictationTake.none)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
     }
 
     func testPendingResultReplacesTheEarlierOne() throws {
         let store = PendingDictationStore(defaults: try makeDefaults())
         let session = UUID()
         store.save(PendingDictation(sessionID: session, createdAt: start, text: "First.", pressEnter: false))
-        store.save(PendingDictation(sessionID: session, createdAt: start.addingTimeInterval(1), text: "Second.", pressEnter: false))
+        let second = PendingDictation(sessionID: session, createdAt: start.addingTimeInterval(1), text: "Second.", pressEnter: false)
+        store.save(second)
 
-        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(2))?.text, "Second.")
+        XCTAssertEqual(store.take(sessionID: session, now: start.addingTimeInterval(2)), .fresh(second))
+    }
+
+    func testDiscardResultKeepsTheAwaitedSession() throws {
+        // Clear History and Keep History off: the text goes, but a handoff
+        // that is still recording keeps its session.
+        let defaults = try makeDefaults()
+        let store = PendingDictationStore(defaults: defaults)
+        let session = UUID()
+        store.awaitedSessionID = session
+        store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic handoff.", pressEnter: false))
+
+        store.discardResult()
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+        XCTAssertEqual(store.awaitedSessionID, session)
+        store.discardResult()
+    }
+
+    func testDiscardUnclaimedResult() throws {
+        let defaults = try makeDefaults()
+        let store = PendingDictationStore(defaults: defaults)
+        let session = UUID()
+        let now = start.addingTimeInterval(30)
+
+        // Nothing awaited: nobody can ever take it.
+        store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic orphan.", pressEnter: false))
+        store.discardUnclaimedResult(now: now)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+
+        // Another session awaited.
+        store.awaitedSessionID = UUID()
+        store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic orphan.", pressEnter: false))
+        store.discardUnclaimedResult(now: now)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+
+        // Unreadable.
+        defaults.set(Data("not json".utf8), forKey: "ios_pending_dictation")
+        store.discardUnclaimedResult(now: now)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+
+        // Fresh and awaited: kept for the keyboard.
+        store.awaitedSessionID = session
+        let fresh = PendingDictation(sessionID: session, createdAt: start, text: "Synthetic handoff.", pressEnter: true)
+        store.save(fresh)
+        store.discardUnclaimedResult(now: now)
+        XCTAssertEqual(store.take(sessionID: session, now: now), .fresh(fresh))
+
+        // Expired and awaited: the text goes, a marker stays, so the keyboard
+        // still learns that it expired.
+        store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic handoff.", pressEnter: true))
+        let late = start.addingTimeInterval(PendingDictation.maxAge + 1)
+        store.discardUnclaimedResult(now: late)
+        let marker = PendingDictation(sessionID: session, createdAt: start, text: "", pressEnter: false)
+        let stored = try XCTUnwrap(defaults.data(forKey: "ios_pending_dictation"))
+        XCTAssertEqual(try JSONDecoder().decode(PendingDictation.self, from: stored), marker)
+        store.discardUnclaimedResult(now: late)
+        XCTAssertEqual(store.take(sessionID: session, now: late), .expired(marker))
+        XCTAssertEqual(store.awaitedSessionID, session, "The awaited session is never touched")
+
+        // Nothing stored: nothing happens.
+        store.discardUnclaimedResult(now: late)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
     }
 
     func testAwaitedSessionRoundTrips() throws {
@@ -186,7 +261,7 @@ final class StoresTests: XCTestCase {
 
         store.clear()
         XCTAssertNil(store.awaitedSessionID)
-        XCTAssertNil(store.take(sessionID: session, now: start))
+        XCTAssertEqual(store.take(sessionID: session, now: start), PendingDictationTake.none)
         XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
     }
 
