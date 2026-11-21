@@ -17,14 +17,17 @@ enum IOSAudioCoreTests {
         testLiveAudioLevelNormalizerGoldenSequence()
         testLoudnessAnalyzerPercentiles()
         testLoudnessAnalyzerIsChunkInvariant()
+        testLoudnessAnalyzerIgnoresDigitalSilence()
         testGainPolicyDecisions()
         testGainPolicyOnSyntheticSpeechAndNoise()
+        testGainPolicyIgnoresLeadingDigitalSilence()
         testWAVHeaderGoldenBytes()
         testWAVParsingAndDecoding()
         testStreamingWriterMatchesOneShotEncoding()
         testApplyGainInPlace()
         testWriterFinishDiscardAndErrors()
         testCaptureRecordingFinishesAndRejectsShortClips()
+        testCaptureRecordingIgnoresLeadingSilenceForGain()
         testCapturePageHTML()
         testJavaScriptCoreRunsPromiseJobs()
         testJavaScriptReadyWaitsForTheFirstFrame()
@@ -308,6 +311,51 @@ enum IOSAudioCoreTests {
         }
     }
 
+    private static func testLoudnessAnalyzerIgnoresDigitalSilence() {
+        // Whole blocks of digital silence, before or inside the speech, change only the frame count.
+        let speech = speechAndNoise(seconds: 1)
+        var plain = LoudnessAnalyzer()
+        plain.ingest(speech)
+        let expected = plain.summary()
+        var padded = LoudnessAnalyzer()
+        padded.ingest([Int16](repeating: 0, count: 3_200))
+        padded.ingest(speech[..<8_000])
+        padded.ingest([Int16](repeating: 0, count: 6_400))
+        padded.ingest(speech[8_000...])
+        TestSupport.expectEqual(
+            padded.summary(),
+            LoudnessSummary(
+                frames: speech.count + 9_600,
+                peakDBFS: expected.peakDBFS,
+                speechDBFS: expected.speechDBFS,
+                noiseFloorDBFS: expected.noiseFloorDBFS
+            )
+        )
+
+        // Silence alone leaves nothing to measure, which the gain policy reads as no speech.
+        var silent = LoudnessAnalyzer()
+        silent.ingest([Int16](repeating: 0, count: 16_000))
+        TestSupport.expectEqual(
+            silent.summary(),
+            LoudnessSummary(frames: 16_000, peakDBFS: -120, speechDBFS: -120, noiseFloorDBFS: -120)
+        )
+        TestSupport.expectEqual(UploadGainPolicy.decide(silent.summary()), .unchanged(.noSpeech))
+
+        // With no whole block left to measure, a partial last block with signal counts as one.
+        var tail = LoudnessAnalyzer()
+        tail.ingest([Int16](repeating: 0, count: 640))
+        tail.ingest(tone(frequency: 1_000, amplitude: 0.1, frames: 160))
+        let tailSummary = tail.summary()
+        TestSupport.expectEqual(tailSummary.frames, 800)
+        TestSupport.expectApproximatelyEqual(Double(tailSummary.speechDBFS), -23.01, accuracy: 0.5)
+        TestSupport.expectEqual(tailSummary.speechDBFS, tailSummary.noiseFloorDBFS)
+
+        // Only exact zeros are skipped: one LSB of signal is a real, if very low, floor.
+        var faint = LoudnessAnalyzer()
+        faint.ingest([Int16(1)] + [Int16](repeating: 0, count: 319))
+        TestSupport.expectEqual(faint.summary().noiseFloorDBFS, -115.25)
+    }
+
     private static func testGainPolicyDecisions() {
         func decide(peak: Float, speech: Float, floor: Float, frames: Int = 16_000) -> UploadGainPolicy.Decision {
             UploadGainPolicy.decide(LoudnessSummary(frames: frames, peakDBFS: peak, speechDBFS: speech, noiseFloorDBFS: floor))
@@ -353,6 +401,33 @@ enum IOSAudioCoreTests {
         var noiseOnly = LoudnessAnalyzer()
         noiseOnly.ingest(noise(rmsDBFS: -60, frames: 16_000, seed: 3))
         TestSupport.expectEqual(UploadGainPolicy.decide(noiseOnly.summary()), .unchanged(.noSpeech))
+    }
+
+    /// WebKit zero-fills the stream until the microphone's first input arrives. Counted, 200 ms
+    /// of that fill set the p10 floor to -119.75 dBFS: noise-only clips got past the no-speech
+    /// guard (+24 dB on -50 dBFS hiss), and the -50 dBFS floor cap stopped limiting the gain.
+    private static func testGainPolicyIgnoresLeadingDigitalSilence() {
+        func decision(_ parts: [Int16]...) -> UploadGainPolicy.Decision {
+            var analyzer = LoudnessAnalyzer()
+            for part in parts {
+                analyzer.ingest(part)
+            }
+            return UploadGainPolicy.decide(analyzer.summary())
+        }
+        let lead = [Int16](repeating: 0, count: 3_200)
+
+        let roomNoise = noise(rmsDBFS: -50, frames: 16_000, seed: 3)
+        TestSupport.expectEqual(decision(roomNoise), .unchanged(.noSpeech))
+        TestSupport.expectEqual(decision(lead, roomNoise), .unchanged(.noSpeech))
+
+        // Speech keeps the gain it gets without the lead. Here the -20 dBFS speech target limits it.
+        let speech = speechAndNoise(seconds: 1)
+        TestSupport.expectEqual(decision(lead, speech), decision(speech))
+        TestSupport.expectApproximatelyEqual(Double(decision(lead, speech).gainDB), 21.75, accuracy: 0.5)
+        // Over a -55 dBFS floor the floor cap limits it to about +5 dB (the lead used to allow +19.75).
+        let overLouderFloor = speechAndNoise(seconds: 1, speechDBFS: -40, floorDBFS: -55)
+        TestSupport.expectEqual(decision(lead, overLouderFloor), decision(overLouderFloor))
+        TestSupport.expectApproximatelyEqual(Double(decision(lead, overLouderFloor).gainDB), 5.25, accuracy: 0.5)
     }
 
     // MARK: WAV
@@ -528,6 +603,36 @@ enum IOSAudioCoreTests {
             TestSupport.expectEqual(error as? PCMChunkDecoder.Failure, .invalidBase64)
         }
         broken.discard()
+    }
+
+    /// The leading zero-fill arrives as zero-level chunks before the first audible one.
+    private static func testCaptureRecordingIgnoresLeadingSilenceForGain() {
+        let directory = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func chunk(_ sequence: Int, _ samples: [Int16], levels: [Float]) -> PCMChunk {
+            PCMChunk(session: 8, sequence: sequence, frameCount: samples.count, base64: PCM16.encodeLittleEndian(samples).base64EncodedString(), levels: levels, isFinal: false)
+        }
+
+        // 200 ms of zero-fill in five chunks, then a second of -50 dBFS room noise and no speech.
+        let recording = try! CaptureRecording(session: 8, fileURL: directory.appending(path: "noise.wav"))
+        for sequence in 0..<5 {
+            _ = try! recording.append(chunk(sequence, [Int16](repeating: 0, count: 640), levels: [0]))
+        }
+        TestSupport.expect(!recording.isAudible, "Zero-fill is not audible")
+        let roomNoise = noise(rmsDBFS: -50, frames: 16_000, seed: 3)
+        _ = try! recording.append(chunk(5, Array(roomNoise[..<8_000]), levels: [0.003, 0.003]))
+        _ = try! recording.append(chunk(6, Array(roomNoise[8_000...]), levels: [0.003, 0.003]))
+
+        guard let finished = try! recording.finish() else {
+            TestSupport.expect(false, "A 1.2 s recording must finish")
+            return
+        }
+        TestSupport.expectEqual(finished.frameCount, 19_200)
+        TestSupport.expectEqual(finished.gain, .unchanged(.noSpeech))
+        TestSupport.expectEqual(
+            WAVEncoder.decode(try! Data(contentsOf: finished.fileURL))?.samples,
+            [Int16](repeating: 0, count: 3_200) + roomNoise
+        )
     }
 
     private static func testCapturePageHTML() {
@@ -938,11 +1043,12 @@ enum IOSAudioCoreTests {
         }
     }
 
-    /// Quiet "speech" (a -42 dBFS tone, 200 ms of every 500 ms) over a -72 dBFS noise floor.
-    private static func speechAndNoise(seconds: Double) -> [Int16] {
+    /// Quiet "speech" (a 1 kHz tone, 200 ms of every 500 ms) over a noise floor; by default the
+    /// tone is at -42 dBFS and the floor at -72 dBFS.
+    private static func speechAndNoise(seconds: Double, speechDBFS: Double = -42, floorDBFS: Double = -72) -> [Int16] {
         let frames = Int(seconds * 16_000)
-        let floor = noise(rmsDBFS: -72, frames: frames, seed: 7)
-        let speech = tone(frequency: 1_000, amplitude: pow(10, -42.0 / 20) * 2.0.squareRoot(), frames: frames)
+        let floor = noise(rmsDBFS: floorDBFS, frames: frames, seed: 7)
+        let speech = tone(frequency: 1_000, amplitude: pow(10, speechDBFS / 20) * 2.0.squareRoot(), frames: frames)
         return (0..<frames).map { index in
             let speaking = index % 8_000 < 3_200
             let mixed = Int(floor[index]) + (speaking ? Int(speech[index]) : 0)

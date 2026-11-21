@@ -56,6 +56,11 @@ struct LoudnessSummary: Equatable {
 
 /// Streams 16 kHz samples into 20 ms block RMS values kept in a 0.5 dB histogram from
 /// -120 to 0 dBFS, so memory stays constant however long the recording runs.
+///
+/// Blocks of exact digital silence are left out of the percentiles but still count towards
+/// `frames` and the peak. WebKit fills the stream with zeros before the microphone's first
+/// input and after an underrun. That fill isn't the room's background level: counted, 200 ms
+/// of it pulls the p10 floor to -120 dBFS and switches off the gain policy's noise guards.
 struct LoudnessAnalyzer {
     static let blockFrames = 320
     static let binWidthDB: Float = 0.5
@@ -78,8 +83,11 @@ struct LoudnessAnalyzer {
             partialSumOfSquares += value * value
             partialFrames += 1
             if partialFrames == Self.blockFrames {
-                Self.record(rms: (partialSumOfSquares / Double(partialFrames)).squareRoot(), in: &histogram)
-                blockCount += 1
+                // The sum is exactly 0 only when every sample in the block is 0.
+                if partialSumOfSquares > 0 {
+                    Self.record(rms: (partialSumOfSquares / Double(partialFrames)).squareRoot(), in: &histogram)
+                    blockCount += 1
+                }
                 partialSumOfSquares = 0
                 partialFrames = 0
             }
@@ -87,12 +95,13 @@ struct LoudnessAnalyzer {
         frames += samples.count
     }
 
-    /// Percentiles use complete blocks. A recording shorter than one block counts as one
-    /// partial block.
+    /// Percentiles use complete blocks that aren't digital silence. When there are none, a
+    /// partial last block that isn't silent counts as one block. With nothing left to measure,
+    /// speech and floor are both -120 dBFS, which `UploadGainPolicy` treats as no speech.
     func summary() -> LoudnessSummary {
         var histogram = self.histogram
         var blocks = blockCount
-        if blocks == 0 && partialFrames > 0 {
+        if blocks == 0 && partialSumOfSquares > 0 {
             Self.record(rms: (partialSumOfSquares / Double(partialFrames)).squareRoot(), in: &histogram)
             blocks = 1
         }
