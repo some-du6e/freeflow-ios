@@ -91,7 +91,8 @@ Every check runs on GitHub Actions; no local Mac is needed.
     tests that drive it, against a local mock of the provider API
     (`.github/scripts/mock-openai-server.py`);
   - uploads screenshots as artifacts;
-  - checks that the project also builds with the Xcode 27 preview.
+  - on pull requests and manual runs, checks that the project also builds with
+    the Xcode 27 preview. That check is informational and never blocks a merge.
 - `make check` (the Mac checks) also compiles and tests the Foundation-only
   code in `ios/Shared/Core`.
 
@@ -129,9 +130,11 @@ the shared settings.
 
 FreeFlow has no server. What leaves the phone:
 
-- Each dictation's audio goes to your configured transcription provider. The
-  transcript then goes to your configured LLM provider for cleanup, unless
-  "Preserve exact wording" is on.
+- Each dictation's audio goes to your configured transcription provider.
+- The transcript then goes to your configured LLM provider for cleanup.
+  - With "Preserve exact wording" on, it skips the LLM, unless an Output
+    Language is set. Then it's still sent, for a literal translation.
+  - A matching voice macro sends nothing to the LLM.
 - The iOS app sends **no surrounding document text** as context. Cleanup gets
   the same "context disabled" input the Mac app uses when context capture is
   off.
