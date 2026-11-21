@@ -143,26 +143,105 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
-    func testABusyRecorderAdoptsTheAwaitedSession() async throws {
+    func testAnAwaitedSessionReplacesABusyRecorderForAnotherSession() async throws {
+        // In Alice's chat the keyboard opened the app for a first session.
+        // The user said "on my way, press enter" and swiped back while it
+        // was transcribing. In Bob's chat the keyboard stopped waiting (a mic
+        // press), capture failed again, and it opened the app for a second
+        // session from Bob's field. Alice's message must never be handed to
+        // that session, where the keyboard would insert it into Bob's field
+        // and press return. The second session records on its own.
+        let first = UUID()
+        let second = UUID()
+        let firstURL = try XCTUnwrap(URL(string: "freeflow://dictate?session=\(first.uuidString)"))
+        let secondURL = try XCTUnwrap(URL(string: "freeflow://dictate?session=\(second.uuidString)"))
+        // A recorder opened for the awaited first session, and one opened by
+        // a link nobody awaited and then started with a tap: neither may hand
+        // its audio to the second session.
+        for keyboardAwaitedTheFirst in [true, false] {
+            let spy = AppRecorderSpy()
+            spy.processingDelay = 0.3
+            spy.results = [.success(appSyntheticResult(text: "On my way.", pressEnter: true))]
+            let stores = AppTestStores()
+            defer { stores.tearDown() }
+            let app = FreeFlowAppModel(environment: stores.environment(recorderSpy: spy))
+            app.pauseBeforeRereadingAwaitedSession = {}
+            stores.pendingDictations.awaitedSessionID = keyboardAwaitedTheFirst ? first : nil
+
+            await app.handle(url: firstURL)
+            let busy = try XCTUnwrap(app.activeRecorder)
+            XCTAssertEqual(busy.startsOnAppear, keyboardAwaitedTheFirst)
+            if keyboardAwaitedTheFirst {
+                busy.startIfNeeded()
+            } else {
+                busy.start()
+            }
+            try XCTUnwrap(spy.lastRecorder).onFirstAudio?()
+            _ = await appWaitUntil { busy.phase == .recording }
+            busy.appDidEnterBackground()
+            XCTAssertEqual(busy.phase, .processing)
+
+            stores.pendingDictations.awaitedSessionID = second
+            await app.handle(url: secondURL)
+
+            let fresh = try XCTUnwrap(app.activeRecorder)
+            XCTAssertFalse(fresh === busy, "The second session gets a recorder of its own")
+            XCTAssertEqual(fresh.mode, .handoff(sessionID: second))
+            XCTAssertTrue(fresh.startsOnAppear)
+            XCTAssertEqual(busy.mode, .handoff(sessionID: first), "A recorder never changes sessions")
+
+            // The first recording is dropped: its transcription is cancelled
+            // and nothing it said is saved for the keyboard or kept.
+            let ended = await appWaitUntil { spy.endedRuns == 1 }
+            XCTAssertTrue(ended, "The first recording's transcription must end")
+            XCTAssertEqual(spy.cancelledRuns, 1, "It is cancelled, not finished")
+            let leaked = await appWaitUntil(timeout: 0.3) { !spy.pending.isEmpty || !spy.history.isEmpty }
+            XCTAssertFalse(leaked, "Nothing from the first recording is handed off or kept in History")
+            XCTAssertEqual(stores.pendingDictations.awaitedSessionID, second, "The keyboard still waits for the second session")
+
+            // What the keyboard gets for the second session is its own recording.
+            spy.results = [.success(appSyntheticResult(text: "Running late.", pressEnter: true))]
+            fresh.startIfNeeded()
+            try XCTUnwrap(spy.lastRecorder).onFirstAudio?()
+            _ = await appWaitUntil { fresh.phase == .recording }
+            fresh.stop()
+            let handedOff = await appWaitUntil { fresh.phase.accessibilityName == "handed-off" }
+            XCTAssertTrue(handedOff, "phase is \(fresh.phase)")
+            XCTAssertEqual(spy.pending.map(\.sessionID), [second])
+            XCTAssertEqual(spy.pending.map(\.text), ["Running late."])
+        }
+    }
+
+    @MainActor
+    func testABusyRecorderKeepsTheSessionItServes() async throws {
+        // "Open FreeFlow" while the keyboard waits reopens the same session,
+        // so the transcription under way is still the one the keyboard wants.
         let spy = AppRecorderSpy()
+        spy.processingDelay = 0.2
+        spy.results = [.success(appSyntheticResult(text: "Still for this field.", pressEnter: true))]
         let stores = AppTestStores()
         defer { stores.tearDown() }
         let app = FreeFlowAppModel(environment: stores.environment(recorderSpy: spy))
-        let first = UUID()
-        let second = UUID()
+        let session = UUID()
+        stores.pendingDictations.awaitedSessionID = session
+        let url = try XCTUnwrap(URL(string: "freeflow://dictate?session=\(session.uuidString)"))
 
-        app.startDictation(mode: .handoff(sessionID: first))
+        await app.handle(url: url)
         let recorder = try XCTUnwrap(app.activeRecorder)
         recorder.startIfNeeded()
-        XCTAssertTrue(recorder.isBusy)
+        try XCTUnwrap(spy.lastRecorder).onFirstAudio?()
+        _ = await appWaitUntil { recorder.phase == .recording }
+        recorder.appDidEnterBackground()
+        XCTAssertEqual(recorder.phase, .processing)
 
-        // The keyboard stopped waiting for the first session and asked again.
-        stores.pendingDictations.awaitedSessionID = second
-        let url = try XCTUnwrap(URL(string: "freeflow://dictate?session=\(second.uuidString)"))
         await app.handle(url: url)
 
         XCTAssertTrue(app.activeRecorder === recorder)
-        XCTAssertEqual(recorder.mode, .handoff(sessionID: second))
+        let handedOff = await appWaitUntil { recorder.phase.accessibilityName == "handed-off" }
+        XCTAssertTrue(handedOff, "phase is \(recorder.phase)")
+        XCTAssertEqual(spy.cancelledRuns, 0)
+        XCTAssertEqual(spy.pending.map(\.sessionID), [session])
+        XCTAssertEqual(spy.pending.first?.pressEnter, true)
     }
 
     @MainActor
@@ -192,11 +271,12 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
-    func testABusyInAppRecorderNeverAdoptsAHandoff() async throws {
+    func testAnAwaitedSessionReplacesABusyInAppRecorder() async throws {
         // "Dictate Without the Keyboard", then the user switches apps while it
         // transcribes and the keyboard there falls back to the app.
         let spy = AppRecorderSpy()
-        spy.processingDelay = 5
+        // Short, so a run that wasn't cancelled would finish within the test.
+        spy.processingDelay = 0.3
         spy.results = [.success(appSyntheticResult(text: "Meant for the test field."))]
         let stores = AppTestStores()
         defer { stores.tearDown() }
@@ -222,9 +302,14 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(inApp.mode, .inApp)
 
         // The replaced in-app run is cancelled: its text reaches neither the
-        // keyboard nor the test field.
-        try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertTrue(spy.pending.isEmpty)
+        // keyboard, nor the test field, nor History.
+        let ended = await appWaitUntil { spy.endedRuns == 1 }
+        XCTAssertTrue(ended, "The in-app run must end")
+        XCTAssertEqual(spy.cancelledRuns, 1, "The in-app run is cancelled, not finished")
+        let leaked = await appWaitUntil(timeout: 0.3) {
+            !spy.pending.isEmpty || !spy.history.isEmpty || !app.testFieldText.isEmpty
+        }
+        XCTAssertFalse(leaked, "Nothing from the in-app run is handed off, kept in History or inserted")
         XCTAssertEqual(app.testFieldText, "")
         XCTAssertEqual(stores.pendingDictations.awaitedSessionID, session)
     }
@@ -430,6 +515,45 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(app.environment.hasDataSharingConsent)
         XCTAssertFalse(app.hasCompletedSetup)
         XCTAssertEqual(app.environment.apiKeyState(), .missing)
+    }
+
+    @MainActor
+    func testTheRecorderReadsTheConsentFromSetup() {
+        // The live recorder's gate is the flag onboarding's consent page sets.
+        // A reinstall clears it with the App Group even when the API key
+        // survives in the keychain.
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let dependencies = RecorderDependencies.live(environment: stores.environment())
+        XCTAssertFalse(dependencies.hasConsent(), "Not agreed to in this install yet")
+
+        stores.settings.set(true, for: FreeFlowAppSettingKey.dataSharingConsent)
+        XCTAssertTrue(dependencies.hasConsent())
+
+        stores.settings.removeValue(for: FreeFlowAppSettingKey.dataSharingConsent)
+        XCTAssertFalse(dependencies.hasConsent(), "Withdrawing consent applies at once")
+    }
+
+    @MainActor
+    func testARecorderWaitingForConsentReturnsToSetup() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let app = FreeFlowAppModel(environment: stores.environment())
+
+        // Mid-onboarding (a freeflow:// link opened the recorder over it):
+        // closing shows setup again, where consent comes next.
+        app.startDictation(mode: .inApp)
+        app.closeRecorderAndReturnToSetup()
+        XCTAssertNil(app.activeRecorder)
+        XCTAssertFalse(app.hasCompletedSetup)
+
+        // After setup: it starts over from Welcome, like Re-run Setup.
+        app.completeOnboarding()
+        app.startDictation(mode: .inApp)
+        app.closeRecorderAndReturnToSetup()
+        XCTAssertNil(app.activeRecorder)
+        XCTAssertFalse(app.hasCompletedSetup)
+        XCTAssertEqual(stores.settings.string(FreeFlowAppSettingKey.onboardingStep), OnboardingStep.welcome.rawValue)
     }
 
     @MainActor

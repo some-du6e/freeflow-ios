@@ -53,10 +53,20 @@ final class SettingsScreenModel: ObservableObject {
     private let clearHistory: () -> Void
     private var isLoading = false
 
-    init(settings: SettingsStore, clearHistory: @escaping () -> Void = {}) {
+    /// `clearHistory` runs when Keep History is turned off. Screens use
+    /// `init(environment:)`, which wires it to the real clear.
+    init(settings: SettingsStore, clearHistory: @escaping () -> Void) {
         self.settings = settings
         self.clearHistory = clearHistory
         reload()
+    }
+
+    /// The model the screens use: turning Keep History off runs
+    /// `FreeFlowAppEnvironment.clearHistory()`, like Clear History.
+    convenience init(environment: FreeFlowAppEnvironment) {
+        self.init(settings: environment.settings) {
+            environment.clearHistory()
+        }
     }
 
     func reload() {

@@ -352,11 +352,9 @@ final class KeyboardViewController: UIInputViewController {
         case .openApp(let sessionID):
             openContainingApp(sessionID: sessionID)
         case .stopAwaitingApp:
+            // Without Full Access the App Group is read-only to the keyboard.
             if hasFullAccess {
-                // Nothing awaits a result now, so none can ever be inserted:
-                // drop any the app left, rather than keep its text around.
-                PendingDictationStore.shared.awaitedSessionID = nil
-                PendingDictationStore.shared.discardResult()
+                KeyboardHandoffCheck.stopAwaiting(PendingDictationStore.shared)
             }
         case .checkForAppResult:
             checkForAppResult()
@@ -522,29 +520,17 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// Picks up a result the app recorded for this keyboard, if one is waiting.
+    /// Picks up a result the app recorded for this keyboard, if one is
+    /// waiting. `KeyboardHandoffCheck` decides what the store's contents
+    /// mean, including discarding a result nobody awaits.
     private func checkForAppResult() {
         guard hasFullAccess, !machine.isBusy else { return }
-        let store = PendingDictationStore.shared
-        guard let sessionID = store.awaitedSessionID else {
-            // No keyboard waits for a result, so a leftover one can never be
-            // inserted; don't keep its text in the App Group.
-            store.discardResult()
-            send(.handoffAbsent)
-            return
-        }
-        switch store.take(sessionID: sessionID, now: Date()) {
-        case .fresh(let pending), .expired(let pending):
-            // The machine checks freshness: an expired result ends the wait
-            // with a message instead of being inserted.
-            send(.handoffResultArrived(
-                pending,
-                expectedDocumentID: handoffLedger.documentID(sessionID: sessionID),
-                document: currentDocument()
-            ))
-        case .none:
-            send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
-        }
+        send(KeyboardHandoffCheck.check(
+            PendingDictationStore.shared,
+            ledger: handoffLedger,
+            now: Date(),
+            document: currentDocument()
+        ))
     }
 
     // MARK: DEBUG screenshot states

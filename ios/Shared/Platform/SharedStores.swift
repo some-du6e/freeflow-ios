@@ -46,8 +46,9 @@ final class HistoryStore {
     }
 
     /// Deletes the history file. The app calls this, together with
-    /// `PendingDictationStore.discardResult()`, when the user clears history
-    /// or turns Keep history off, so no dictation text stays on the device.
+    /// `PendingDictationStore.discardResultAndItsWait()`, when the user clears
+    /// history or turns Keep history off, so no dictation text stays on the
+    /// device.
     func clear() {
         lock.lock()
         defer { lock.unlock() }
@@ -145,10 +146,24 @@ final class PendingDictationStore {
         return pending.isFresh(now: now) ? .fresh(pending) : .expired(pending)
     }
 
-    /// Removes the pending result only. The awaited session stays, so a
-    /// handoff that is still recording delivers as usual.
+    /// Removes the pending result only. The awaited session stays.
     func discardResult() {
         defaults.removeObject(forKey: Self.pendingDictationKey)
+    }
+
+    /// Clear History and Keep History off: removes the stored result, which
+    /// holds dictation text. When it is the result for the session the
+    /// keyboard awaits, that handoff has already delivered and nothing else
+    /// will arrive for it, so the awaited session goes too. The keyboard's
+    /// next check then finds nothing awaited and stops waiting, instead of
+    /// waiting minutes for a result that's gone. With no result stored, or
+    /// one for another session, the awaited session stays, so a handoff that
+    /// hasn't delivered yet still does.
+    func discardResultAndItsWait() {
+        if let pending = loadResult(), pending.sessionID == awaitedSessionID {
+            awaitedSessionID = nil
+        }
+        discardResult()
     }
 
     /// Clears out what no keyboard can still use, for the app to run when it
@@ -184,6 +199,9 @@ final class PendingDictationStore {
         return pending
     }
 }
+
+/// The keyboard reads and ends handoffs through `KeyboardHandoffCheck`.
+extension PendingDictationStore: KeyboardHandoffStore {}
 
 /// The keyboard's self-reported status, for the app's setup checklist.
 final class KeyboardStatusStore {

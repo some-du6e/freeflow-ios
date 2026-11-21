@@ -116,7 +116,7 @@ struct HistoryScreen: View {
             }
             .confirmationDialog("Clear all history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
                 Button("Clear History", role: .destructive) {
-                    app.environment.clearHistory()
+                    app.clearHistory()
                     reload()
                 }
                 Button("Cancel", role: .cancel) {}

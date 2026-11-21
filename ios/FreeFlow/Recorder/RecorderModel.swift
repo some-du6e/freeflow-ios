@@ -49,6 +49,11 @@ enum RecorderPhase: Equatable {
     case permissionDenied
     /// No usable API key.
     case setupNeeded
+    /// The data-sharing consent isn't given in this install, so nothing may
+    /// record or reach the provider (App Review 5.1.2(i)). A reinstall clears
+    /// the consent with the App Group but can keep the API key in the
+    /// keychain.
+    case consentNeeded
     /// Waiting for the first audio.
     case starting
     case recording
@@ -64,6 +69,7 @@ enum RecorderPhase: Equatable {
         case .needsPermission, .requestingPermission: "needs-permission"
         case .permissionDenied: "permission-denied"
         case .setupNeeded: "setup-needed"
+        case .consentNeeded: "consent-needed"
         case .starting: "starting"
         case .recording: "recording"
         case .processing: "processing"
@@ -85,6 +91,9 @@ enum RecorderPhase: Equatable {
 /// Everything the recorder touches outside itself; `live` is the real app.
 struct RecorderDependencies {
     var configuration: () -> DictationConfiguration?
+    /// Whether the user agreed to the data-sharing page in onboarding
+    /// (`FreeFlowAppEnvironment.hasDataSharingConsent`).
+    var hasConsent: () -> Bool
     var microphone: AppMicrophoneAccess
     /// Records that the app holds microphone permission, for the keyboard.
     var markMicrophoneGranted: () -> Void
@@ -117,6 +126,7 @@ struct RecorderDependencies {
         #endif
         return RecorderDependencies(
             configuration: { settings.dictationConfiguration() },
+            hasConsent: { environment.hasDataSharingConsent },
             microphone: environment.microphone,
             markMicrophoneGranted: {
                 if !settings.microphonePermissionGranted {
@@ -180,7 +190,9 @@ final class RecorderModel: ObservableObject, Identifiable {
     // Identifiable through the default `ObjectIdentifier` id, which is
     // nonisolated; the app presents one recorder object per session.
     @Published private(set) var phase: RecorderPhase = .idle
-    @Published private(set) var mode: RecorderMode
+    /// Fixed for the recorder's life: a newer keyboard session gets a new
+    /// recorder, never this one's recording.
+    let mode: RecorderMode
     /// Waveform level in 0...1.
     @Published private(set) var level: Float = 0
     @Published private(set) var recordingStartedAt: Date?
@@ -253,12 +265,6 @@ final class RecorderModel: ObservableObject, Identifiable {
         default:
             break
         }
-    }
-
-    /// The keyboard asked again while this recorder was busy; deliver this
-    /// recording to the newest session it is waiting for.
-    func adoptHandoffSession(_ sessionID: UUID) {
-        mode = .handoff(sessionID: sessionID)
     }
 
     /// The pre-prompt's "Continue" button (App Review 5.1.1(iv)).
@@ -336,6 +342,12 @@ final class RecorderModel: ObservableObject, Identifiable {
 
     private func begin() {
         guard !isClosed else { return }
+        // Before the microphone prompt too: nothing records until setup's
+        // consent page has been agreed to.
+        guard dependencies.hasConsent() else {
+            phase = .consentNeeded
+            return
+        }
         guard dependencies.configuration() != nil else {
             phase = .setupNeeded
             return
@@ -443,6 +455,12 @@ final class RecorderModel: ObservableObject, Identifiable {
 
     private func process() {
         guard !isClosed, let fileURL = recordingURL else { return }
+        // Nothing reaches the provider without consent, even a recording
+        // made before it was withdrawn.
+        guard dependencies.hasConsent() else {
+            phase = .consentNeeded
+            return
+        }
         guard let configuration = dependencies.configuration() else {
             phase = .setupNeeded
             return

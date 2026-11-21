@@ -131,6 +131,8 @@ final class AppRecorderSpy {
     }
 
     var configuration: DictationConfiguration? = AppRecorderSpy.makeConfiguration()
+    /// The data-sharing consent the recorder sees.
+    var hasConsent = true
     let microphone: AppFakeMicrophone
     var recorders: [AppFakeRecorder] = []
     var nextRecorderStartError: Error?
@@ -140,6 +142,10 @@ final class AppRecorderSpy {
     /// so a test can act while a recorder is still processing.
     var processingDelay: TimeInterval = 0
     private(set) var processedURLs: [URL] = []
+    /// Pipeline runs that have returned or thrown, and how many of them
+    /// ended because their task was cancelled during `processingDelay`.
+    private(set) var endedRuns = 0
+    private(set) var cancelledRuns = 0
     private(set) var history: [HistoryEntry] = []
     private(set) var pending: [PendingDictation] = []
     /// When set, the awaited session lives in this store, as in the app, so
@@ -183,6 +189,7 @@ final class AppRecorderSpy {
     func dependencies(startTimeout: TimeInterval = 60, maximumDuration: TimeInterval = 300) -> RecorderDependencies {
         RecorderDependencies(
             configuration: { self.configuration },
+            hasConsent: { self.hasConsent },
             microphone: microphone,
             markMicrophoneGranted: { self.microphoneMarkedGranted += 1 },
             makeRecorder: {
@@ -197,8 +204,14 @@ final class AppRecorderSpy {
             },
             process: { url, _ in
                 self.processedURLs.append(url)
+                defer { self.endedRuns += 1 }
                 if self.processingDelay > 0 {
-                    try await Task.sleep(nanoseconds: UInt64(self.processingDelay * 1_000_000_000))
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(self.processingDelay * 1_000_000_000))
+                    } catch {
+                        self.cancelledRuns += 1
+                        throw error
+                    }
                 }
                 guard !self.results.isEmpty else {
                     return DictationResult(rawTranscript: "", text: "", pressEnter: false, route: .empty, usedRawFallback: false)

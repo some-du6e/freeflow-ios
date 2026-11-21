@@ -186,22 +186,6 @@ final class AppRecorderModelTests: XCTestCase {
         XCTAssertEqual(spy.history.first?.status, .nothingToInsert)
     }
 
-    @MainActor
-    func testAdoptedSessionReceivesTheResult() async throws {
-        let spy = AppRecorderSpy()
-        let newer = UUID()
-        spy.awaitedSessionID = newer
-        spy.results = [.success(appSyntheticResult())]
-        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies(), startsOnAppear: true)
-
-        model.startIfNeeded()
-        model.adoptHandoffSession(newer)
-        try await recordAndStop(model, spy: spy, alreadyStarted: true)
-
-        _ = await appWaitUntil { model.phase.accessibilityName == "handed-off" }
-        XCTAssertEqual(spy.pending.map(\.sessionID), [newer])
-    }
-
     // MARK: In-app
 
     @MainActor
@@ -318,6 +302,59 @@ final class AppRecorderModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .setupNeeded)
         XCTAssertEqual(model.phase.accessibilityName, "setup-needed")
         XCTAssertTrue(spy.recorders.isEmpty)
+    }
+
+    @MainActor
+    func testWithoutConsentNothingRecordsOrUploads() {
+        // After a reinstall the API key can survive in the keychain while the
+        // consent, kept in the App Group, is gone, and any app's freeflow://
+        // link can open the recorder over onboarding. Start must not record,
+        // ask for the microphone, or send anything before consent.
+        let recorders: [(mode: RecorderMode, startsOnAppear: Bool)] = [
+            (.inApp, false),
+            (.handoff(sessionID: UUID()), false),
+            (.handoff(sessionID: UUID()), true),
+        ]
+        for (mode, startsOnAppear) in recorders {
+            let spy = AppRecorderSpy(microphone: AppFakeMicrophone(permission: .undetermined))
+            spy.hasConsent = false
+            spy.awaitedSessionID = mode.sessionID
+            let model = RecorderModel(mode: mode, dependencies: spy.dependencies(), startsOnAppear: startsOnAppear)
+
+            model.startIfNeeded()
+            model.start()
+            model.resumeForAwaitedSession()
+            model.retry()
+
+            XCTAssertEqual(model.phase, .consentNeeded, "\(mode)")
+            XCTAssertEqual(model.phase.accessibilityName, "consent-needed")
+            XCTAssertFalse(model.isBusy)
+            XCTAssertTrue(spy.recorders.isEmpty, "No recording starts")
+            XCTAssertEqual(spy.microphone.requestCount, 0, "Not even the microphone prompt")
+            XCTAssertEqual(spy.microphoneMarkedGranted, 0)
+            XCTAssertTrue(spy.processedURLs.isEmpty, "Nothing is sent to the provider")
+            XCTAssertTrue(spy.history.isEmpty)
+            XCTAssertTrue(spy.pending.isEmpty)
+        }
+    }
+
+    @MainActor
+    func testARecordingIsNotSentOnceConsentIsGone() async throws {
+        let spy = AppRecorderSpy()
+        spy.results = [.success(appSyntheticResult())]
+        let model = RecorderModel(mode: .inApp, dependencies: spy.dependencies(), startsOnAppear: true)
+
+        model.startIfNeeded()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        _ = await appWaitUntil { model.phase == .recording }
+        spy.hasConsent = false
+        model.stop()
+
+        XCTAssertEqual(model.phase, .consentNeeded)
+        XCTAssertTrue(spy.processedURLs.isEmpty, "Nothing is sent to the provider")
+        model.close()
+        XCTAssertEqual(spy.removedFiles, [recorder.startedURL].compactMap { $0 }, "The recording is deleted")
     }
 
     @MainActor
@@ -554,6 +591,8 @@ final class AppRecorderModelTests: XCTestCase {
     func testAccessibilityNamesForEveryPhase() {
         XCTAssertEqual(RecorderPhase.idle.accessibilityName, "idle")
         XCTAssertEqual(RecorderPhase.requestingPermission.accessibilityName, "needs-permission")
+        XCTAssertEqual(RecorderPhase.setupNeeded.accessibilityName, "setup-needed")
+        XCTAssertEqual(RecorderPhase.consentNeeded.accessibilityName, "consent-needed")
         XCTAssertEqual(RecorderPhase.recording.accessibilityName, "recording")
         XCTAssertEqual(RecorderPhase.processing.accessibilityName, "processing")
         XCTAssertEqual(RecorderPhase.failed(message: "x", retry: .recordAgain).accessibilityName, "error")
@@ -567,10 +606,8 @@ final class AppRecorderModelTests: XCTestCase {
     // MARK: Helpers
 
     @MainActor
-    private func recordAndStop(_ model: RecorderModel, spy: AppRecorderSpy, alreadyStarted: Bool = false) async throws {
-        if !alreadyStarted {
-            model.startIfNeeded()
-        }
+    private func recordAndStop(_ model: RecorderModel, spy: AppRecorderSpy) async throws {
+        model.startIfNeeded()
         let recorder = try XCTUnwrap(spy.lastRecorder)
         recorder.onFirstAudio?()
         let isRecording = await appWaitUntil { model.phase == .recording }

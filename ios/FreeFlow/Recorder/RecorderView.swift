@@ -83,6 +83,7 @@ struct RecorderView: View {
         case .needsPermission, .requestingPermission: "Microphone Access"
         case .permissionDenied: "Microphone access is off"
         case .setupNeeded: "API key required"
+        case .consentNeeded: "Finish setting up FreeFlow"
         case .starting: "Starting..."
         case .recording: "Listening..."
         case .processing: "Transcribing..."
@@ -110,6 +111,8 @@ struct RecorderView: View {
             "Turn on Microphone for FreeFlow in Settings, then try again."
         case .setupNeeded:
             "Add your API key in FreeFlow's settings to dictate."
+        case .consentNeeded:
+            "FreeFlow records only after you agree, in setup, to send audio to your provider."
         case .starting, .recording:
             "Say anything — a sentence or two is perfect."
         case .processing:
@@ -156,6 +159,8 @@ struct RecorderView: View {
             symbol("mic.fill")
         case .setupNeeded:
             symbol("key.fill")
+        case .consentNeeded:
+            symbol("lock.shield.fill")
         case .failed:
             symbol("exclamationmark.circle.fill", color: .red)
         case .finished(let outcome):
@@ -279,6 +284,17 @@ struct RecorderView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .accessibilityIdentifier("freeflow.recorder.openAppSettings")
+        case .consentNeeded:
+            Button {
+                app.closeRecorderAndReturnToSetup()
+            } label: {
+                Text("Back to Setup")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("freeflow.recorder.backToSetup")
         case .failed:
             Button {
                 model.retry()

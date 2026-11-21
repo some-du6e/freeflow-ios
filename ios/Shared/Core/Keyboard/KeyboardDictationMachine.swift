@@ -153,9 +153,11 @@ enum KeyboardDictationEffect: Equatable {
     case recordHistory(KeyboardDictationHistoryDraft)
     /// Mark `sessionID` as awaited and open `freeflow://dictate?session=`.
     case openApp(sessionID: UUID)
-    /// Clear `PendingDictationStore.awaitedSessionID`.
+    /// Stop waiting for the app: `KeyboardHandoffCheck.stopAwaiting` clears
+    /// the awaited session and any result the app left.
     case stopAwaitingApp
-    /// Ask `PendingDictationStore` whether the app's result has arrived.
+    /// Ask the store whether the app's result has arrived
+    /// (`KeyboardHandoffCheck.check`).
     case checkForAppResult
     /// Keep this text in memory for Insert last, so it works even with Keep
     /// History off (macOS Paste Again uses the last transcript the same way).
