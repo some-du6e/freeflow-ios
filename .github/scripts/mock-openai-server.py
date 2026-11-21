@@ -24,6 +24,7 @@ FreeFlowUITestAPIKey launch argument alone:
   ui-test-key/transcription-error  transcription returns HTTP 500
   ui-test-key/empty-transcript     transcription returns empty text
   ui-test-key/chat-error           chat completions return HTTP 500
+  ui-test-key/press-enter          the transcript ends in "press enter"
 
 The request log holds metadata only: sizes, formats, levels, counts, the
 User-Agent and model names. It never holds audio, prompt or transcript text,
@@ -58,8 +59,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 API_KEY = "ui-test-key"
-SCENARIOS = ("slow", "transcription-error", "empty-transcript", "chat-error")
+SCENARIOS = ("slow", "transcription-error", "empty-transcript", "chat-error", "press-enter")
 TRANSCRIPT_TEXT = "hello from the free flow mock"
+# The pipeline strips a trailing "press enter" and asks for return.
+PRESS_ENTER_TRANSCRIPT_TEXT = TRANSCRIPT_TEXT + " press enter"
 CLEANUP_TEXT = "Hello from the FreeFlow mock."
 MODELS = (
     "whisper-large-v3",
@@ -467,7 +470,12 @@ class MockHandler(BaseHTTPRequestHandler):
             time.sleep(self.server.slow_seconds)
         if scenario == "transcription-error":
             raise RequestError(500, "mock transcription failure (scenario transcription-error)", "server_error")
-        text = "" if scenario == "empty-transcript" else TRANSCRIPT_TEXT
+        if scenario == "empty-transcript":
+            text = ""
+        elif scenario == "press-enter":
+            text = PRESS_ENTER_TRANSCRIPT_TEXT
+        else:
+            text = TRANSCRIPT_TEXT
         if response_format == "text":
             self.send_bytes(200, text.encode("utf-8"), "text/plain; charset=utf-8", meta)
         elif response_format == "verbose_json":
@@ -771,6 +779,9 @@ def run_self_test() -> int:
         status, parsed, _ = upload(synthetic_wav(), key=f"{API_KEY}/empty-transcript")
         check("scenario empty-transcript returns empty text",
               status == 200 and parsed == {"text": "", "segments": []}, (status, parsed))
+        status, parsed, _ = upload(synthetic_wav(), key=f"{API_KEY}/press-enter")
+        check("scenario press-enter ends the transcript in press enter",
+              status == 200 and parsed.get("text") == "hello from the free flow mock press enter", (status, parsed))
         status, parsed, _ = chat({"model": "m", "messages": messages}, key=f"{API_KEY}/chat-error")
         check("scenario chat-error returns 500", status == 500, status)
         started = time.monotonic()

@@ -88,6 +88,14 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
                 evidence: [app]
             )
             _ = waitUntil(timeout: 10) { primary.isEnabled }
+            if page == "api-key" {
+                // The secure field holds the stored key as dots, which
+                // screenshots blank, so the page has to say a key is saved.
+                XCTAssertTrue(
+                    element(FreeFlowAccessibilityID.Onboarding.apiKeySavedHint, in: app).waitForExistence(timeout: 5),
+                    "The API key page doesn't say a key is saved"
+                )
+            }
             // Let the page's transition finish before the screenshot.
             Thread.sleep(forTimeInterval: 0.8)
             captureNamed("app-onboarding-\(page)-\(appearance)")
@@ -160,6 +168,8 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
             evidence: [app, springboard]
         )
         XCTAssertEqual(status.textValue, "idle", "A link the keyboard didn't ask for must not start recording")
+        let caption = element(FreeFlowAccessibilityID.Recorder.caption, in: app)
+        XCTAssertEqual(caption.label, "Opened from a link", "The recorder must not say it dictates for the keyboard")
         captureNamed("app-recorder-handoff-idle-\(appearance)")
         start.tap()
         try require(
@@ -175,6 +185,7 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
             "The link's recording ended in \(status.textValue), not not-handed-off",
             evidence: [app]
         )
+        XCTAssertEqual(caption.label, "Opened from a link")
         report("The link's recorder waited for Start and kept its result (\(status.textValue))")
         Thread.sleep(forTimeInterval: 0.5)
         captureNamed("app-recorder-handoff-not-sent-\(appearance)")

@@ -29,6 +29,8 @@ enum FreeFlowAccessibilityID {
     enum Onboarding {
         static let continueButton = "freeflow.onboarding.continue"
         static let apiKeyField = "freeflow.onboarding.apiKeyField"
+        /// "A key is saved. Enter a new one to replace it."
+        static let apiKeySavedHint = "freeflow.onboarding.apiKeySavedHint"
         static let microphone = "freeflow.onboarding.microphone"
         static let openSettings = "freeflow.onboarding.openSettings"
     }
@@ -41,6 +43,8 @@ enum FreeFlowAccessibilityID {
         static let cancel = "freeflow.recorder.cancel"
         static let status = "freeflow.recorder.status"
         static let result = "freeflow.recorder.result"
+        /// The top bar's caption: who the recording is for.
+        static let caption = "freeflow.recorder.caption"
     }
 }
 
@@ -98,6 +102,7 @@ enum FreeFlowBundleID {
     static let keyboard = "com.zachlatta.freeflow.ios.keyboard"
     static let settings = "com.apple.Preferences"
     static let springboard = "com.apple.springboard"
+    static let safari = "com.apple.mobilesafari"
 }
 
 /// The local OpenAI-compatible mock that CI starts before the tests
@@ -118,6 +123,8 @@ enum MockProvider {
         case transcriptionError = "transcription-error"
         case emptyTranscript = "empty-transcript"
         case chatError = "chat-error"
+        /// The transcript ends in "press enter", so the result asks for return.
+        case pressEnter = "press-enter"
     }
 
     static func apiKey(for scenario: Scenario) -> String {
@@ -196,6 +203,9 @@ struct FreeFlowLaunchOptions: Sendable {
     var microphoneGranted = true
     var preserveExactWording: Bool?
     var syntheticCapture = false
+    /// The keyboard's capture fails to start, so it offers to record in
+    /// FreeFlow (`-FreeFlowUITestCaptureUnavailable`).
+    var captureUnavailable = false
     /// A `KeyboardDebugDisplayState` value such as `recording:hold`, which a
     /// DEBUG keyboard shows instead of its live state; `live` clears it.
     var keyboardState: String?
@@ -234,6 +244,9 @@ struct FreeFlowLaunchOptions: Sendable {
         }
         if syntheticCapture {
             arguments += ["-FreeFlowUITestSyntheticCapture", "YES"]
+        }
+        if captureUnavailable {
+            arguments += ["-FreeFlowUITestCaptureUnavailable", "YES"]
         }
         if let keyboardState {
             arguments += ["-FreeFlowUITestKeyboardState", keyboardState]
