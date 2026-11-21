@@ -105,12 +105,17 @@ final class KeyboardViewController: UIInputViewController {
         appearedAt = Date()
         send(.appeared)
         recordKeyboardStatus()
-        checkForAppResult()
         refreshKeys()
+        let field = currentDocumentIdentifier == nil ? "unknown" : "known"
+        keyboardLog.info("keyboard appearing; the field's identifier is \(field, privacy: .public)")
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Once the keyboard is up, not while it appears: in CI, keyboards
+        // that read the field for a waiting result in viewWillAppear died at
+        // that read, before the host had given the field an identifier.
+        checkForAppResult()
         // Preload the capture page so the first tap records quickly. Without
         // Full Access the keyboard can't dictate, so it skips the web view.
         guard hasFullAccess, let rootInputView else { return }
@@ -256,7 +261,7 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func micTouchDown(_ sender: UIControl, forEvent event: UIEvent) {
         guard !isShowingDebugState else { return }
         send(.setupChanged(currentSetup()))
-        send(.micPressBegan(documentID: textDocumentProxy.documentIdentifier), at: Self.time(of: event))
+        send(.micPressBegan(documentID: currentDocumentIdentifier), at: Self.time(of: event))
     }
 
     @objc private func micTouchUp(_ sender: UIControl, forEvent event: UIEvent) {
@@ -521,9 +526,31 @@ final class KeyboardViewController: UIInputViewController {
     /// Read just before inserting, for spacing and the changed-field check.
     private func currentDocument() -> KeyboardDictationDocument {
         KeyboardDictationDocument(
-            identifier: textDocumentProxy.documentIdentifier,
+            identifier: currentDocumentIdentifier,
             textBeforeCursor: textDocumentProxy.documentContextBeforeInput
         )
+    }
+
+    /// `textDocumentProxy.documentIdentifier`, or nil while the host hasn't
+    /// given the field one. UIKit declares it non-null, so Swift imports it
+    /// as `UUID` and traps if it is nil, which it can be before the host's
+    /// input session is ready. Read through its getter instead, it comes
+    /// back as an optional.
+    private var currentDocumentIdentifier: UUID? {
+        let proxy = textDocumentProxy
+        let getter = #selector(getter: UITextDocumentProxy.documentIdentifier)
+        guard proxy.responds(to: getter) else { return nil }
+        return (proxy.perform(getter)?.takeUnretainedValue() as? NSUUID).map { $0 as UUID }
+    }
+
+    /// `currentDocument()` for a handoff arrival, logged without content:
+    /// only whether the field has an identifier.
+    private func currentDocumentForHandoff() -> KeyboardDictationDocument {
+        keyboardLog.info("handoff check: reading the field")
+        let document = currentDocument()
+        let field = document.identifier == nil ? "unknown" : "known"
+        keyboardLog.info("handoff check: the field's identifier is \(field, privacy: .public)")
+        return document
     }
 
     // MARK: Open-the-app fallback
@@ -532,7 +559,7 @@ final class KeyboardViewController: UIInputViewController {
         // The ledger first: a process stopped between the two writes then
         // leaves no awaited session without an open time, which every new
         // keyboard would wait on from its own start.
-        handoffLedger.recordOpen(sessionID: sessionID, documentID: textDocumentProxy.documentIdentifier, at: Date())
+        handoffLedger.recordOpen(sessionID: sessionID, documentID: currentDocumentIdentifier, at: Date())
         PendingDictationStore.shared.awaitedSessionID = sessionID
         // Start from the view iOS put in the keyboard window; its responder
         // chain ends at the extension's UIApplication.
@@ -573,7 +600,7 @@ final class KeyboardViewController: UIInputViewController {
             PendingDictationStore.shared,
             ledger: handoffLedger,
             now: Date(),
-            document: currentDocument()
+            document: currentDocumentForHandoff()
         )
         let summary = checked.report.summary
         let uptime = Int(Date().timeIntervalSince(Self.processStartedAt))
