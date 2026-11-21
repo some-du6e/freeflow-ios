@@ -156,13 +156,17 @@ function ffSyntheticSource(onBlock) {
 // The page posts {t:'ready'}, then per session {t:'started'}, one {t:'pcm'} per callback,
 // and finally {t:'ended'} or {t:'failed'}. Native acks every pcm message. The page releases
 // the microphone by itself when posted chunks go unacked for 2.5 s (native-unresponsive) or
-// when no audio callback arrives for 2.5 s (no-audio).
+// when no audio callback arrives for 2.5 s (no-audio). The ended message also counts the
+// callbacks the page ran, and the audio WebKit lost before they could run (see track()).
 (() => {
   const SP_FRAMES = 2048;              // about 42.7 ms per ScriptProcessor callback at 48 kHz
   const METER_SECONDS = 1024 / 48000;  // about 21.3 ms RMS blocks for the waveform
   const ACK_TIMEOUT_MS = 2500;         // the dead-man switch, also the longest input stall
   const ACK_CHECK_MS = 500;
   const STOP_GRACE_MS = 250;           // longest wait for one more callback after stop()
+  const LATE_WINDOW = 32;              // recent callbacks a later one can still show were late
+  const SETTLED_CALLBACKS = 8;         // the context's final lead is the lowest over this many
+  const MAX_NOTES = 16;                // anomalies status() reports, by position in the audio
   const native = window.webkit.messageHandlers.ffCapture;
   const post = (message) => native.postMessage(message); // a Promise, settled by the native reply
   let S = null;    // the active session
@@ -186,7 +190,7 @@ function ffSyntheticSource(onBlock) {
     if (S !== s) return;
     S = null; s.endedIn = s.phase; s.phase = 'ended'; s.reason = reason;
     teardown(s);
-    post({ t: 'ended', sid: s.sid, reason, frames: s.frames }).catch(() => {});
+    post({ t: 'ended', sid: s.sid, reason, frames: s.frames, callbacks: s.callbacks, skipped: skippedCallbacks(s), late: s.late }).catch(() => {});
   }
   function fail(s, name) {
     if (S !== s) return;
@@ -209,9 +213,49 @@ function ffSyntheticSource(onBlock) {
     }
     return levels;
   }
+  // How continuous the audio was, as far as the page can tell. The context's clock counts every
+  // frame it renders, so its lead over the audio this page received (the lag, in frames) moves
+  // with scheduling jitter, and grows for good when WebKit drops audio before a callback runs.
+  // WebKit also never waits for a callback: one that runs a whole period behind a later one ran
+  // after WebKit could refill its buffer, so its audio may be lost or repeated. Counts, and
+  // positions in the 16 kHz audio sent, only. The synthetic source has no context to compare.
+  function track(s, frames) {
+    const now = performance.now();
+    if (s.callbacks > 1) {
+      const gap = now - s.lastAudio;
+      if (gap > s.maxGapMs) s.maxGapMs = gap;
+      if (gap > 2000 * SP_FRAMES / s.rate) note(s, 'gap', gap, s.frames);
+    }
+    s.received += frames;
+    if (!s.ctx) return;
+    const time = s.ctx.currentTime;
+    const lag = time * s.rate - s.received;
+    if (s.callbacks === 1) { s.lagBase = lag; s.time0 = time; s.wall0 = now; }
+    s.lagBase = Math.min(s.lagBase, lag);
+    s.stallMs = Math.max(s.stallMs, now - s.wall0 - (time - s.time0) * 1000);
+    s.pending = s.pending.filter((p) => {
+      if (p.lag - lag < SP_FRAMES) return true;
+      s.late++;
+      note(s, 'late', (p.lag - lag) * 1000 / s.rate, p.at);
+      return false;
+    });
+    s.pending.push({ lag, at: s.frames });
+    if (s.pending.length > LATE_WINDOW) s.pending.shift();
+    s.settled.push(lag);
+    if (s.settled.length > SETTLED_CALLBACKS) s.settled.shift();
+  }
+  // Callbacks' worth of audio the context rendered that never reached the page.
+  function skippedCallbacks(s) {
+    if (!s.settled.length) return 0;
+    return Math.max(0, Math.floor((Math.min(...s.settled) - s.lagBase) / SP_FRAMES));
+  }
+  function note(s, kind, ms, at) {
+    if (s.notes.length < MAX_NOTES) s.notes.push(kind + '@' + at + ':' + Math.round(ms) + 'ms');
+  }
   function onAudio(s, x) {
     if (S !== s) return;
     s.callbacks++;
+    track(s, x.length);
     s.lastAudio = performance.now();
     const levels = meter(s, x);
     const y = s.rs.process(x);
@@ -246,6 +290,8 @@ function ffSyntheticSource(onBlock) {
       sid: Number(o.sid) || 0, synthetic: !!o.synthetic, phase: 'starting', endedIn: '', reason: '',
       seq: 0, acked: 0, frames: 0, callbacks: 0, sumSq: 0, count: 0, stopping: false,
       rate: 0, captureRate: 0, lastAck: performance.now(),
+      received: 0, lagBase: 0, time0: 0, wall0: 0, pending: [], settled: [], late: 0,
+      maxGapMs: 0, stallMs: 0, notes: [],
     };
     S = s; last = s;
     try {
@@ -314,6 +360,8 @@ function ffSyntheticSource(onBlock) {
     return {
       sid: s.sid, phase: s.phase, endedIn: s.endedIn, reason: s.reason, synthetic: s.synthetic,
       frames: s.frames, seq: s.seq, acked: s.acked, callbacks: s.callbacks,
+      skipped: skippedCallbacks(s), late: s.late, maxGapMs: Math.round(s.maxGapMs),
+      stallMs: Math.round(s.stallMs), notes: s.notes.join(' '),
       rate: s.rate, captureRate: s.captureRate,
       ctxState: s.ctx ? s.ctx.state : '', ctxTime: s.ctx ? s.ctx.currentTime : 0,
     };

@@ -14,6 +14,21 @@ struct PCMChunk: Equatable {
     let isFinal: Bool
 }
 
+/// The page's own count, from its `ended` message, of audio WebKit lost before the page's
+/// callbacks could run. WebKit drops audio the page never sees, and it refills a callback's
+/// buffer while the callback is still waiting to run, which loses or repeats audio. FreeFlow
+/// writes everything the page sends, so it can't recover either; these say only that it
+/// happened. Counts only, never audio.
+struct CaptureContinuity: Equatable {
+    /// Audio callbacks the page ran.
+    var callbacks = 0
+    /// Callbacks' worth of audio the audio context rendered that never reached the page.
+    var skippedCallbacks = 0
+    /// Callbacks that ran a whole callback period behind a later one, late enough that WebKit
+    /// may already have refilled their buffer.
+    var lateCallbacks = 0
+}
+
 /// A message the capture page posts to `window.webkit.messageHandlers.ffCapture`.
 ///
 /// `init(body:)` parses `WKScriptMessage.body`, which WebKit delivers as an NSDictionary of
@@ -26,8 +41,9 @@ enum CaptureMessage: Equatable {
     /// The audio graph is running. Rates are in Hz; `captureRate` is 0 when unknown.
     case started(session: Int, contextRate: Double, captureRate: Double, isSynthetic: Bool)
     case pcm(PCMChunk)
-    /// The session ended in the page, after `stop`, `cancel`, or on its own.
-    case ended(session: Int, reason: String, frames: Int)
+    /// The session ended in the page, after `stop`, `cancel`, or on its own. Missing or malformed
+    /// counts read as zero, so they can never cost a session its ending.
+    case ended(session: Int, reason: String, frames: Int, continuity: CaptureContinuity = CaptureContinuity())
     /// The session never started. `name` is the JavaScript error name, e.g. NotAllowedError.
     case failed(session: Int, name: String)
 
@@ -79,7 +95,12 @@ enum CaptureMessage: Equatable {
             self = .ended(
                 session: session,
                 reason: Self.token(fields["reason"]),
-                frames: max(0, Self.integer(fields["frames"]) ?? 0)
+                frames: Self.count(fields["frames"]),
+                continuity: CaptureContinuity(
+                    callbacks: Self.count(fields["callbacks"]),
+                    skippedCallbacks: Self.count(fields["skipped"]),
+                    lateCallbacks: Self.count(fields["late"])
+                )
             )
         case "failed":
             guard let session = Self.integer(fields["sid"]) else { return nil }
@@ -94,7 +115,7 @@ enum CaptureMessage: Equatable {
         switch self {
         case .ready:
             return nil
-        case .started(let session, _, _, _), .ended(let session, _, _), .failed(let session, _):
+        case .started(let session, _, _, _), .ended(let session, _, _, _), .failed(let session, _):
             return session
         case .pcm(let chunk):
             return chunk.session
@@ -142,6 +163,11 @@ enum CaptureMessage: Equatable {
             return nil
         }
         return Int(value)
+    }
+
+    /// A count: a non-negative integer, or 0 for anything else.
+    static func count(_ value: Any?) -> Int {
+        max(0, integer(value) ?? 0)
     }
 
     static func boolean(_ value: Any?) -> Bool? {
