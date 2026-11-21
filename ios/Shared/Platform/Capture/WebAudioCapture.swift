@@ -9,6 +9,10 @@ struct CapturedAudio: Equatable {
     let sampleRate: Int
     /// Gain applied at stop, in dB (0 when the audio was left unchanged).
     let appliedGainDB: Float
+    /// The page's count of audio lost between WebKit's audio context and the page, from its
+    /// `ended` message. Nil when the capture finished without one: the stop wait ran out, or the
+    /// page went away.
+    var pageContinuity: CaptureContinuity? = nil
 
     var duration: TimeInterval {
         sampleRate > 0 ? Double(frameCount) / Double(sampleRate) : 0
@@ -88,8 +92,9 @@ final class WebAudioCapture: NSObject {
 
     /// Matches the macOS AudioRecorder buffer watchdog.
     static let startTimeout: TimeInterval = 2.0
-    /// How long `stop()` waits for the page's final chunk before finishing with what arrived.
-    static let stopTimeout: TimeInterval = 1.0
+    /// How long `stop()` waits by default for the page's final chunk before finishing with what
+    /// arrived. It stays inside the keyboard's stop backstop (see `CaptureTiming`).
+    static let stopTimeout: TimeInterval = CaptureTiming.stopTimeout
     /// A backstop: capture stops by itself after 10 minutes, which keeps the WAV (19.2 MB)
     /// under the providers' 25 MB upload limit. The keyboard stops sooner on its own.
     static let maximumDuration: TimeInterval = 600
@@ -113,6 +118,10 @@ final class WebAudioCapture: NSObject {
     /// The first-audio watchdog for the next `start()`. Defaults to `startTimeout`; tests
     /// lengthen it for slow CI simulators.
     var startTimeoutInterval: TimeInterval = WebAudioCapture.startTimeout
+
+    /// How long the next `stop()` waits for the page's final chunk. Defaults to `stopTimeout`;
+    /// keep it under `KeyboardDictationMachine.stopBackstop`.
+    var stopTimeoutInterval: TimeInterval = WebAudioCapture.stopTimeout
 
     #if DEBUG
     /// DEBUG builds only. When set, overrides the App Group flag
@@ -249,7 +258,7 @@ final class WebAudioCapture: NSObject {
         let id = session.id
         if session.hasStartedPage {
             sendPageCommand("stop", session: id)
-            session.stopDeadline = after(Self.stopTimeout) { [weak self] in
+            session.stopDeadline = after(stopTimeoutInterval) { [weak self] in
                 self?.stopTimeoutPassed(session: id)
             }
         } else {
@@ -303,9 +312,10 @@ final class WebAudioCapture: NSObject {
         case .pcm(let chunk):
             guard let session, session.id == chunk.session else { return rejectStale("pcm", session: chunk.session) }
             return receive(chunk, in: session)
-        case .ended(let id, let reason, let frames):
+        case .ended(let id, let reason, let frames, let continuity):
             guard let session, session.id == id else { return rejectStale("ended", session: id) }
             Self.log.info("Capture session \(id, privacy: .public) ended in the page: \(reason, privacy: .public), \(frames, privacy: .public) frames sent")
+            session.pageContinuity = continuity
             if session.phase == .stopping {
                 finish(session)
             } else {
@@ -640,7 +650,11 @@ final class WebAudioCapture: NSObject {
             delegate?.webAudioCapture(self, didFail: .noAudio)
             return
         }
-        Self.log.info("Capture session \(session.id, privacy: .public) finished: \(finished.frameCount, privacy: .public) frames, gain \(finished.gain.gainDB, privacy: .public) dB, \(finished.skippedChunks, privacy: .public) chunks missing")
+        // The page's counts come early in the line: CI keeps only the first 220 characters.
+        let page = session.pageContinuity.map {
+            "\($0.callbacks) callbacks, \($0.skippedCallbacks) skipped, \($0.lateCallbacks) late"
+        } ?? "no report"
+        Self.log.info("Capture session \(session.id, privacy: .public) finished: \(finished.frameCount, privacy: .public) frames (page: \(page, privacy: .public)), gain \(finished.gain.gainDB, privacy: .public) dB, \(finished.skippedChunks, privacy: .public) chunks missing")
         #if DEBUG
         let loudness = finished.loudness
         Self.log.debug("Capture loudness: peak \(loudness.peakDBFS, privacy: .public), speech \(loudness.speechDBFS, privacy: .public), floor \(loudness.noiseFloorDBFS, privacy: .public) dBFS")
@@ -649,7 +663,8 @@ final class WebAudioCapture: NSObject {
             fileURL: finished.fileURL,
             frameCount: finished.frameCount,
             sampleRate: finished.sampleRate,
-            appliedGainDB: finished.gain.gainDB
+            appliedGainDB: finished.gain.gainDB,
+            pageContinuity: session.pageContinuity
         ))
     }
 
@@ -761,6 +776,8 @@ final class WebAudioCapture: NSObject {
         var hasStartedPage = false
         /// The page ran the start command (its evaluateJavaScript call completed).
         var pageAnsweredStart = false
+        /// What the page's `ended` message counted, once it arrives.
+        var pageContinuity: CaptureContinuity?
         var watchdog: Task<Void, Never>?
         var stopDeadline: Task<Void, Never>?
 

@@ -39,10 +39,12 @@ enum IOSAudioCoreTests {
         testJavaScriptDeadManSwitch()
         testJavaScriptInputStallReleasesTheMicrophone()
         testJavaScriptStopTimeoutCancelAndStaleSessions()
+        testJavaScriptCountsLateAndSkippedCallbacks()
         testJavaScriptFailures()
         testJavaScriptSyntheticSource()
         testJavaScriptSyntheticSourceCatchesUpAfterAStall()
         testJavaScriptInterruptions()
+        testStopWaitEndsInsideTheKeyboardsBackstop()
     }
 
     // MARK: PCM16
@@ -114,6 +116,14 @@ enum IOSAudioCoreTests {
 
         let ended: NSDictionary = ["t": "ended", "sid": 3, "reason": "native-unresponsive", "frames": 683]
         TestSupport.expectEqual(CaptureMessage(body: ended), .ended(session: 3, reason: "native-unresponsive", frames: 683))
+        let counted: NSDictionary = [
+            "t": "ended", "sid": 3, "reason": "stopped", "frames": NSNumber(value: 45_092.0),
+            "callbacks": NSNumber(value: 66.0), "skipped": 1, "late": 2,
+        ]
+        TestSupport.expectEqual(
+            CaptureMessage(body: counted),
+            .ended(session: 3, reason: "stopped", frames: 45_092, continuity: CaptureContinuity(callbacks: 66, skippedCallbacks: 1, lateCallbacks: 2))
+        )
 
         let failed: NSDictionary = ["t": "failed", "sid": 5, "name": "NotAllowedError"]
         TestSupport.expectEqual(CaptureMessage(body: failed), .failed(session: 5, name: "NotAllowedError"))
@@ -173,6 +183,11 @@ enum IOSAudioCoreTests {
         TestSupport.expectEqual(CaptureMessage.token("日本語"), "unknown")
         let unsafeReason: [String: Any] = ["t": "ended", "sid": 1, "reason": "stopped; rm -rf", "frames": -4]
         TestSupport.expectEqual(CaptureMessage(body: unsafeReason), .ended(session: 1, reason: "stoppedrm-rf", frames: 0))
+        // Bad counts read as zero rather than costing the session its ending.
+        let badCounts: [String: Any] = ["t": "ended", "sid": 1, "reason": "stopped", "frames": 9, "callbacks": -3, "skipped": 1.5, "late": "2"]
+        TestSupport.expectEqual(CaptureMessage(body: badCounts), .ended(session: 1, reason: "stopped", frames: 9))
+        TestSupport.expectEqual(CaptureMessage.count(true), 0)
+        TestSupport.expectEqual(CaptureMessage.count(NSNumber(value: 7.0)), 7)
     }
 
     private static func testChunkDecoderValidatesAndCountsGaps() {
@@ -842,7 +857,7 @@ enum IOSAudioCoreTests {
             __feed(__last);
             0
             """)
-        guard case .ended(7, "stopped", let pageFrames)? = page.native.messages.last else {
+        guard case .ended(7, "stopped", let pageFrames, let continuity)? = page.native.messages.last else {
             TestSupport.expect(false, "The session must end as stopped: \(page.native.messages.suffix(2))")
             return
         }
@@ -854,6 +869,8 @@ enum IOSAudioCoreTests {
         TestSupport.expectEqual(chunks.reduce(0) { $0 + $1.levels.count }, (24_000 + 2_048) / 1_024)
         TestSupport.expectEqual(chunks.first?.levels.count, 2)
         TestSupport.expectEqual(pageFrames, chunks.reduce(0) { $0 + $1.frameCount })
+        // Every callback ran on time, and the one after stop() carried the final chunk.
+        TestSupport.expectEqual(continuity, CaptureContinuity(callbacks: chunks.count, skippedCallbacks: 0, lateCallbacks: 0))
         TestSupport.expectEqual(Int(page.number("ffCapture.status().acked")), chunks.count)
         TestSupport.expectEqual(page.number("__media.trackStops"), 1)
         TestSupport.expectEqual(page.string("__ctx.state"), "closed")
@@ -907,7 +924,7 @@ enum IOSAudioCoreTests {
                 __feed(__noise(2048, -45, 7));
                 0
                 """)
-            guard case .ended(session, "stopped", _)? = page.native.messages.last,
+            guard case .ended(session, "stopped", _, _)? = page.native.messages.last,
                   let recording = page.native.recording, let finished = try! recording.finish() else {
                 TestSupport.expect(false, "Fill \(fill) must stop cleanly: \(page.native.messages.suffix(2))")
                 continue
@@ -979,7 +996,7 @@ enum IOSAudioCoreTests {
         page.evaluate("ffCapture.stop(3); __advance(200); 0")
         TestSupport.expectEqual(page.string("ffCapture.status().phase"), "stopping")
         page.evaluate("__advance(100); 0")
-        guard case .ended(3, "stopped", _)? = page.native.messages.last,
+        guard case .ended(3, "stopped", _, _)? = page.native.messages.last,
               let last = page.native.chunks.last else {
             TestSupport.expect(false, "A stop with no further callback must end after the grace period")
             return
@@ -999,6 +1016,71 @@ enum IOSAudioCoreTests {
             ]
         )
         page.expectNoExceptions()
+    }
+
+    /// The page compares the audio it received with the audio context's clock. Scheduling jitter
+    /// counts as nothing. A callback a whole period behind a later one is late, as when a stalled
+    /// main thread runs several back to back. A lead that lasts is audio WebKit dropped before
+    /// any callback ran. The counts reach native in `ended`, and status() keeps where the late
+    /// callbacks fell.
+    private static func testJavaScriptCountsLateAndSkippedCallbacks() {
+        let page = JSCapturePage()
+        page.evaluate("ffCapture.start({sid: 1}); 0")
+        page.evaluate("""
+            // 20 callbacks that run up to 900 frames after their audio is complete.
+            for (let i = 0; i < 20; i++) __deliver((i + 1) * 2048 + [0, 300, 900][i % 3]);
+            // A stall: the next four run back to back once the context is three blocks ahead.
+            for (let i = 20; i < 24; i++) __deliver(24 * 2048 + 600 + 400 * (i - 20));
+            for (let i = 24; i < 28; i++) __deliver((i + 1) * 2048 + 300);
+            // Then two blocks the page never sees.
+            for (let i = 28; i < 38; i++) __deliver((i + 3) * 2048 + 300);
+            ffCapture.stop(1);
+            __deliver(41 * 2048 + 300);
+            0
+            """)
+        let frames = page.native.chunks.reduce(0) { $0 + $1.frameCount }
+        let continuity = CaptureContinuity(callbacks: 39, skippedCallbacks: 2, lateCallbacks: 3)
+        TestSupport.expectEqual(page.native.messages.last, .ended(session: 1, reason: "stopped", frames: frames, continuity: continuity))
+        TestSupport.expectEqual(page.number("ffCapture.status().skipped"), 2)
+        TestSupport.expectEqual(page.number("ffCapture.status().late"), 3)
+        // Late callbacks are noted where their audio starts among the frames sent.
+        let positions = page.doubles("ffCapture.status().notes.split(' ').map((note) => Number(note.split('@')[1].split(':')[0]))")
+        TestSupport.expectEqual(positions.count, 3)
+        TestSupport.expect(positions == positions.sorted() && positions.allSatisfy { (13_000...15_500).contains($0) }, "Late callbacks 20 to 22 start about 13,650 frames in: \(positions)")
+
+        // A session that kept up counts nothing, even with a slow clock in between.
+        let steady = JSCapturePage()
+        steady.evaluate("ffCapture.start({sid: 2}); 0")
+        for _ in 0..<50 {
+            steady.evaluate("__advance(40); __feed(__tone(48000, 440, 2048 / 48000, 0.1)); 0")
+        }
+        steady.evaluate("ffCapture.cancel(2); 0")
+        let steadyFrames = steady.native.chunks.reduce(0) { $0 + $1.frameCount }
+        TestSupport.expectEqual(steady.native.messages.last, .ended(session: 2, reason: "cancelled", frames: steadyFrames, continuity: CaptureContinuity(callbacks: 50)))
+        TestSupport.expectEqual(steady.string("ffCapture.status().notes"), "")
+
+        // A session that ends inside the backlog of a long stall: the queued callbacks run back
+        // to back at one context time, and stop() arrives behind some of them. Their lag measures
+        // the queue, not lost audio, so nothing counts as skipped; all but the last two ran late.
+        let backlogged = JSCapturePage()
+        backlogged.evaluate("ffCapture.start({sid: 3}); 0")
+        backlogged.evaluate("""
+            for (let i = 0; i < 30; i++) __deliver((i + 1) * 2048 + [0, 300, 900][i % 3]);
+            // A 1.7 s stall, after which the context moves on only 64 frames per queued callback.
+            var stalledUntil = 30 * 2048 + 81600;
+            for (let i = 30; i < 45; i++) __deliver(stalledUntil + 64 * (i - 30));
+            ffCapture.stop(3);
+            __deliver(stalledUntil + 64 * 15);
+            0
+            """)
+        let backloggedFrames = backlogged.native.chunks.reduce(0) { $0 + $1.frameCount }
+        TestSupport.expectEqual(
+            backlogged.native.messages.last,
+            .ended(session: 3, reason: "stopped", frames: backloggedFrames, continuity: CaptureContinuity(callbacks: 46, skippedCallbacks: 0, lateCallbacks: 14))
+        )
+        page.expectNoExceptions()
+        steady.expectNoExceptions()
+        backlogged.expectNoExceptions()
     }
 
     private static func testJavaScriptFailures() {
@@ -1057,7 +1139,7 @@ enum IOSAudioCoreTests {
             page.evaluate("__advance(20); 0")
         }
         page.evaluate("ffCapture.stop(9); 0")
-        guard case .ended(9, "stopped", _)? = page.native.messages.last,
+        guard case .ended(9, "stopped", _, _)? = page.native.messages.last,
               let recording = page.native.recording, let finished = try! recording.finish() else {
             TestSupport.expect(false, "The synthetic session must stop cleanly: \(page.native.messages.suffix(2))")
             return
@@ -1087,7 +1169,9 @@ enum IOSAudioCoreTests {
         page.evaluate("ffCapture.stop(9); 0")
         let frames = page.native.chunks.reduce(0) { $0 + $1.frameCount }
         TestSupport.expect((15_500...17_500).contains(frames), "A stalled synthetic session must deliver about 1 s, got \(frames) frames")
-        TestSupport.expectEqual(page.native.messages.last, .ended(session: 9, reason: "stopped", frames: frames))
+        // One callback per synthetic block; the final chunk after them comes from stop().
+        let continuity = CaptureContinuity(callbacks: page.native.chunks.count - 1)
+        TestSupport.expectEqual(page.native.messages.last, .ended(session: 9, reason: "stopped", frames: frames, continuity: continuity))
         TestSupport.expectEqual(page.native.chunks.map(\.sequence), Array(0..<page.native.chunks.count))
         page.expectNoExceptions()
     }
@@ -1103,7 +1187,7 @@ enum IOSAudioCoreTests {
             let page = JSCapturePage()
             page.evaluate("ffCapture.start({sid: 1}); 0")
             page.evaluate("__feed(__tone(48000, 440, 0.05, 0.1)); \(item.trigger); 0")
-            guard case .ended(1, let reason, _)? = page.native.messages.last else {
+            guard case .ended(1, let reason, _, _)? = page.native.messages.last else {
                 TestSupport.expect(false, "\(item.trigger) must end the session")
                 continue
             }
@@ -1115,6 +1199,26 @@ enum IOSAudioCoreTests {
         hiddenWhileIdle.evaluate("document.hidden = true; __dispatch('document:visibilitychange'); __dispatch('pagehide'); 0")
         TestSupport.expectEqual(hiddenWhileIdle.native.messages.count, 1)
         hiddenWhileIdle.expectNoExceptions()
+    }
+
+    // MARK: Timing
+
+    /// WebAudioCapture's stop wait must end before the keyboard's stop backstop, with time left
+    /// to finish the file, or the keyboard gives up on a recording that was about to arrive. It
+    /// must also outlast the page stalls CI has shown, or it cuts off the end of a dictation.
+    private static func testStopWaitEndsInsideTheKeyboardsBackstop() {
+        TestSupport.expect(
+            CaptureTiming.stopTimeout < KeyboardDictationMachine.stopBackstop,
+            "The stop wait (\(CaptureTiming.stopTimeout) s) must end before the keyboard's stop backstop (\(KeyboardDictationMachine.stopBackstop) s)"
+        )
+        TestSupport.expect(
+            KeyboardDictationMachine.stopBackstop - CaptureTiming.stopTimeout >= 1,
+            "The keyboard must leave the capture at least 1 s after its stop wait to finish the file"
+        )
+        TestSupport.expect(
+            CaptureTiming.stopTimeout >= 2,
+            "The stop wait must outlast the 1.7 s page stalls seen on CI, got \(CaptureTiming.stopTimeout) s"
+        )
     }
 
     // MARK: Fixtures
@@ -1338,11 +1442,23 @@ function __concat(parts) {
   for (const p of parts) { z.set(p, o); o += p.length; }
   return z;
 }
-// Feeds x to the ScriptProcessor in callback-sized blocks; returns the blocks fed.
+// Feeds x to the ScriptProcessor in callback-sized blocks; returns the blocks fed. The context's
+// clock advances by each block before its callback runs, as if every callback ran on time.
 function __feed(x, frames) {
   const size = frames || 2048; let blocks = 0;
-  for (let i = 0; i < x.length; i += size) { const block = x.slice(i, i + size); __sp.onaudioprocess({ inputBuffer: { getChannelData: () => block } }); blocks++; }
+  for (let i = 0; i < x.length; i += size) {
+    const block = x.slice(i, i + size);
+    __ctx.currentTime += block.length / __ctx.sampleRate;
+    __sp.onaudioprocess({ inputBuffer: { getChannelData: () => block } }); blocks++;
+  }
   return blocks;
+}
+// One callback of 2048 frames of a 440 Hz tone, run once the context has rendered `rendered`
+// frames in all, so a test can make callbacks late or lose audio before them.
+function __deliver(rendered) {
+  __ctx.currentTime = rendered / __ctx.sampleRate;
+  const block = __tone(__ctx.sampleRate, 440, 2048 / __ctx.sampleRate, 0.1);
+  __sp.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
 }
 function __resample(rate, x, chunk) {
   const r = new FFResampler(rate), out = [];
