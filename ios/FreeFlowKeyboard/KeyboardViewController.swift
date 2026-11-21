@@ -104,6 +104,7 @@ final class KeyboardViewController: UIInputViewController {
         send(.setupChanged(currentSetup()))
         appearedAt = Date()
         send(.appeared)
+        noteAwaitedSession()
         recordKeyboardStatus()
         refreshKeys()
         let field = currentDocumentIdentifier == nil ? "unknown" : "known"
@@ -112,9 +113,10 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // Once the keyboard is up, not while it appears: in CI, keyboards
-        // that read the field for a waiting result in viewWillAppear died at
-        // that read, before the host had given the field an identifier.
+        // The full check reads the field for a result that has arrived, so
+        // it waits until the keyboard is up. In CI, on returns to Safari, the
+        // field had no identifier yet in viewWillAppear, and keyboards that
+        // had read it there directly died.
         checkForAppResult()
         // Preload the capture page so the first tap records quickly. Without
         // Full Access the keyboard can't dictate, so it skips the web view.
@@ -128,8 +130,9 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         deleteRepeater.stop()
-        // How long the keyboard was up: an Insert from FreeFlow offer lets go
-        // of its result only after `KeyboardDictationMachine.offerReleaseGrace`.
+        // How long the keyboard was up, from viewWillAppear. An Insert from
+        // FreeFlow offer's grace (`KeyboardDictationMachine.offerReleaseGrace`)
+        // counts from when the offer showed, a little later.
         let onScreen = appearedAt.map { String(format: "%.1f", Date().timeIntervalSince($0)) } ?? "unknown"
         appearedAt = nil
         keyboardLog.info("keyboard hidden after \(onScreen, privacy: .public) s on screen, controller \(self.controllerNumber, privacy: .public) of \(Self.controllersLoaded, privacy: .public)")
@@ -580,6 +583,18 @@ final class KeyboardViewController: UIInputViewController {
             keyboardLog.error("found no UIApplication to open FreeFlow")
             send(.appOpenFailed)
         }
+    }
+
+    /// Tells the machine, from the store alone and without reading the
+    /// field, about a session FreeFlow is recording for, while the keyboard
+    /// appears. A mic press or Insert last while it slides in then ends that
+    /// wait as usual, and a waiting machine's next check moves past
+    /// viewDidAppear, where `checkForAppResult()` reads the field for a
+    /// result that has arrived.
+    private func noteAwaitedSession() {
+        guard hasFullAccess, !machine.isBusy,
+              let sessionID = PendingDictationStore.shared.awaitedSessionID else { return }
+        send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
     }
 
     /// Picks up a result the app recorded for this keyboard, if one is

@@ -56,11 +56,11 @@ The fallback works like this:
   for you to tap Start.
 - The app records, processes, and hands the text back through the App Group.
 - iOS has no API for returning to the previous app. You swipe back (or use
-  the "◀︎ App" breadcrumb), and the keyboard inserts the result if you're in
-  the field you opened FreeFlow from. In any other field it offers a one-tap
-  "Insert from FreeFlow" instead, which never presses return. So does the
-  first field if you opened FreeFlow again from another field while it was
-  still working on the same dictation.
+  the "◀︎ App" breadcrumb), and the keyboard inserts the result if it can
+  tell you're in the field you opened FreeFlow from. Otherwise it offers a
+  one-tap "Insert from FreeFlow", which never presses return. That includes
+  the first field if you opened FreeFlow again from another field for the
+  same dictation.
 
 ## Requirements
 
@@ -176,9 +176,10 @@ What stays on the phone:
   - it expires (3 minutes) and the keyboard next appears or FreeFlow next
     opens.
 
-  A keyboard that closes before it uses the text, or that shows for only a
-  moment, leaves it for the next keyboard. That keyboard inserts it in the
-  field you opened FreeFlow from and offers it in any other field or app.
+  If the keyboard quits unexpectedly before it uses the text, or shows for
+  only a moment, the text stays for the next keyboard. That keyboard inserts
+  it if it can tell it's the field you opened FreeFlow from, and offers it
+  anywhere else.
 - **Recordings:** deleted after transcription. After a failed upload the app
   keeps the file so you can try again, until you close the recorder.
 

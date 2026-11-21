@@ -20,8 +20,9 @@ import XCTest
 /// the other keyboard tests have kept one keyboard process alive for
 /// minutes (FreeFlowWarmKeyboardFallbackTests). In CI (2026-11-21), keyboard
 /// processes that came up with FreeFlow's result waiting died right after
-/// finding it, while reading the host field in viewWillAppear, and Safari
-/// then needed a tap on its address field. The older check had already
+/// finding it, while reading the host field in viewWillAppear, where the
+/// field had no identifier yet, and Safari then needed a tap on its address
+/// field. The older check had already
 /// taken the result out of the store, so it was lost and the next keyboard
 /// waited for good, in either order. Now the check leaves the result in the
 /// store until the keyboard uses it or lets it go (KeyboardHandoffCheck,

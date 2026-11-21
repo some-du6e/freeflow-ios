@@ -648,12 +648,6 @@ final class AppRecorderModelTests: XCTestCase {
         // return, only in a field it can confirm. Anywhere else it offers
         // Insert from FreeFlow, which never presses return.
         XCTAssertEqual(RecorderView.handedOffTitle, "Swipe back to your app")
-        XCTAssertEqual(
-            RecorderView.handedOffSubtitle,
-            "FreeFlow inserts the text there if it can tell it's the same field; otherwise tap Insert from FreeFlow on the keyboard."
-        )
-        XCTAssertFalse(RecorderView.handedOffSubtitle.contains("Insert Last"))
-
         var outcome = RecorderOutcome(
             text: "Synthetic handoff.",
             rawTranscript: "synthetic handoff press enter",
@@ -662,7 +656,26 @@ final class AppRecorderModelTests: XCTestCase {
             usedRawFallback: false,
             handedOff: true
         )
+        XCTAssertEqual(
+            RecorderView.handedOffSubtitle(for: outcome),
+            "FreeFlow inserts the text there if it can tell it's the same field; otherwise tap Insert from FreeFlow on the keyboard."
+        )
         XCTAssertEqual(RecorderView.returnNote(for: outcome), "Presses Return only in the same field")
+
+        // Only "press enter": no text to offer, so no Insert from FreeFlow.
+        var returnOnly = outcome
+        returnOnly.text = ""
+        XCTAssertEqual(
+            RecorderView.handedOffSubtitle(for: returnOnly),
+            "FreeFlow presses Return there if it can tell it's the same field."
+        )
+        var nothing = returnOnly
+        nothing.pressEnter = false
+        XCTAssertEqual(RecorderView.handedOffSubtitle(for: nothing), "Swipe back to your app. There was nothing to insert.")
+        for handedOff in [outcome, returnOnly, nothing] {
+            XCTAssertFalse(RecorderView.handedOffSubtitle(for: handedOff).contains("Insert Last"))
+        }
+
         // The test field does get return.
         outcome.handedOff = false
         XCTAssertEqual(RecorderView.returnNote(for: outcome), "Then presses Return")

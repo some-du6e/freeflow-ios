@@ -74,8 +74,9 @@ extension KeyboardDictationDocument {
     /// hasn't given its field one. The keyboard reads every identifier
     /// through this. UIKit declares the property non-null, so a direct read
     /// imports it as `UUID` and traps on nil, which it can be before the
-    /// host's input session is ready. (In CI, keyboards died while reading
-    /// the field in viewWillAppear with a handoff result waiting.) Through
+    /// host's input session is ready. (In CI, on returns to Safari, this read
+    /// came back nil in viewWillAppear, and keyboards that had read the
+    /// property there directly died.) Through
     /// its getter, which the keyboard passes in as
     /// `#selector(getter: UITextDocumentProxy.documentIdentifier)` so this
     /// stays Foundation-only, it comes back as an optional. An unknown

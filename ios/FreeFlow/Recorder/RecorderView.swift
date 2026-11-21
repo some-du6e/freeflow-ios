@@ -120,7 +120,7 @@ struct RecorderView: View {
             nil
         case .finished(let outcome):
             if outcome.handedOff {
-                outcome.isNothingToInsert ? Self.handedOffNothingSubtitle : Self.handedOffSubtitle
+                Self.handedOffSubtitle(for: outcome)
             } else if outcome.keyboardStoppedWaiting {
                 outcome.isNothingToInsert
                     ? "There was nothing to insert."
@@ -194,13 +194,22 @@ struct RecorderView: View {
     // MARK: Handed-off copy
 
     static let handedOffTitle = "Swipe back to your app"
+
     /// The keyboard inserts a handed-off result on its own only in a field
     /// it can confirm is the one FreeFlow was opened from. Anywhere else, or
     /// when it can't tell, it offers Insert from FreeFlow, which never
-    /// presses return.
-    static let handedOffSubtitle =
-        "FreeFlow inserts the text there if it can tell it's the same field; otherwise tap Insert from FreeFlow on the keyboard."
-    static let handedOffNothingSubtitle = "Swipe back to your app. There was nothing to insert."
+    /// presses return. A result that is only "press enter" has no text to
+    /// offer: the keyboard presses return in a confirmed field and leaves
+    /// any other field alone.
+    static func handedOffSubtitle(for outcome: RecorderOutcome) -> String {
+        if outcome.isNothingToInsert {
+            return "Swipe back to your app. There was nothing to insert."
+        }
+        if outcome.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "FreeFlow presses Return there if it can tell it's the same field."
+        }
+        return "FreeFlow inserts the text there if it can tell it's the same field; otherwise tap Insert from FreeFlow on the keyboard."
+    }
 
     /// The result card's note on "press enter": the test field gets return,
     /// and a handed-off result gets it only where the keyboard inserts it on
