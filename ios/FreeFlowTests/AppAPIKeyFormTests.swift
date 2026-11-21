@@ -260,8 +260,8 @@ final class AppAPIKeyFormTests: XCTestCase {
         form.presentIfNeeded()
 
         XCTAssertTrue(form.showsSavedKeyHint)
+        // A fixed sentence, so no part of the key can appear in it.
         XCTAssertEqual(APIKeyFormModel.savedKeyHint, "A key is saved. Enter a new one to replace it.")
-        XCTAssertFalse(APIKeyFormModel.savedKeyHint.contains("synthetic"), "The hint never shows the key")
 
         form.draft.apiKey = ""
         XCTAssertFalse(form.showsSavedKeyHint, "A cleared field is being replaced")
@@ -287,15 +287,38 @@ final class AppAPIKeyFormTests: XCTestCase {
         XCTAssertFalse(form.showsSavedKeyHint, "A typed key isn't a saved one")
     }
 
+    /// A keychain that stops answering takes the hint away, since the key it
+    /// claimed can't be read any more.
     @MainActor
     func testUnreadableKeychainShowsNoSavedHint() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
+        stores.credentials.storedAPIKey = "synthetic-saved-key"
+        let form = makeForm(stores, AppValidationRecorder())
+        form.presentIfNeeded()
+        XCTAssertTrue(form.showsSavedKeyHint)
+
         stores.credentials.readFailure = .unavailable
+        form.presentIfNeeded()
+
+        XCTAssertEqual(form.keychainFailure, .unavailable)
+        XCTAssertFalse(form.showsSavedKeyHint)
+    }
+
+    /// The API key reads, but the transcription key's item doesn't: the page
+    /// shows the keychain warning alone, not the hint next to it.
+    @MainActor
+    func testKeychainWarningReplacesTheSavedHint() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        stores.credentials.storedAPIKey = "synthetic-saved-key"
+        stores.credentials.transcriptionReadFailure = .missingEntitlement
         let form = makeForm(stores, AppValidationRecorder())
 
         form.presentIfNeeded()
 
+        XCTAssertTrue(form.hasSavedKey)
+        XCTAssertEqual(form.keychainFailure, .missingEntitlement)
         XCTAssertFalse(form.showsSavedKeyHint)
     }
 

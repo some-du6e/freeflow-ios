@@ -302,6 +302,24 @@ final class AppRecorderModelTests: XCTestCase {
         XCTAssertEqual(link.topBarCaption, "Dictating for the FreeFlow keyboard", "The keyboard asked for it after all")
     }
 
+    /// The keyboard's App Group write arrived after the app stopped
+    /// re-reading it, so the recorder opened idle. Start then records for the
+    /// keyboard, and the caption says so from the start.
+    @MainActor
+    func testStartForASessionTheKeyboardAwaitsAfterAllIsForTheKeyboard() {
+        let spy = AppRecorderSpy()
+        let session = UUID()
+        let model = RecorderModel(mode: .handoff(sessionID: session), dependencies: spy.dependencies(), startsOnAppear: false)
+        model.startIfNeeded()
+        XCTAssertEqual(model.topBarCaption, "Opened from a link")
+
+        spy.awaitedSessionID = session
+        model.start()
+
+        XCTAssertTrue(model.isForWaitingKeyboard)
+        XCTAssertEqual(model.topBarCaption, "Dictating for the FreeFlow keyboard")
+    }
+
     /// A link's recording that the keyboard never waited for keeps the
     /// link's caption to the end, next to "Not sent to the keyboard".
     @MainActor

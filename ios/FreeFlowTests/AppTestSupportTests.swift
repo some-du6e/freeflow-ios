@@ -27,6 +27,8 @@ final class AppFakeCredentialStore: AppCredentialStore {
     var storedAPIKey: String?
     var storedTranscriptionAPIKey: String?
     var readFailure: SharedKeychain.Failure?
+    /// Fails only the transcription key's read; it is a keychain item of its own.
+    var transcriptionReadFailure: SharedKeychain.Failure?
     var failsWrites = false
     private(set) var writeCount = 0
 
@@ -46,8 +48,8 @@ final class AppFakeCredentialStore: AppCredentialStore {
     }
 
     func transcriptionAPIKey() -> Result<String?, SharedKeychain.Failure> {
-        if let readFailure {
-            return .failure(readFailure)
+        if let failure = readFailure ?? transcriptionReadFailure {
+            return .failure(failure)
         }
         return .success(storedTranscriptionAPIKey)
     }

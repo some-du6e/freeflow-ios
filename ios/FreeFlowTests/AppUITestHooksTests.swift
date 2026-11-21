@@ -90,6 +90,9 @@ final class AppUITestHooksTests: XCTestCase {
         apply([Argument.captureUnavailable: "NO"], stores)
         XCTAssertFalse(stores.defaults.bool(forKey: "ios_debug_capture_unavailable"))
         XCTAssertFalse(WebAudioCaptureUITestSwitch.isOn(stores.defaults))
+
+        // A reset must clear it even where the suite's keys can't be listed.
+        XCTAssertTrue(FreeFlowUITestHooks.knownSharedKeys.contains("ios_debug_capture_unavailable"))
     }
 
     func testKeyboardStateHookSetsAndClearsTheForcedState() {

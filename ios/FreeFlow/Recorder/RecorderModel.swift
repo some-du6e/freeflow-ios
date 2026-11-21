@@ -274,6 +274,11 @@ final class RecorderModel: ObservableObject, Identifiable {
     func start() {
         guard !hasStarted, !isClosed else { return }
         hasStarted = true
+        // The keyboard's App Group write can arrive after the link was
+        // checked; if it now waits for this session, the recording is its.
+        if let sessionID = mode.sessionID, dependencies.awaitedSessionID() == sessionID {
+            isForWaitingKeyboard = true
+        }
         begin()
     }
 

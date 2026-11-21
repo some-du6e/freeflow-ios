@@ -78,9 +78,9 @@ final class APIKeyFormModel: ObservableObject {
     static let savedKeyHint = "A key is saved. Enter a new one to replace it."
 
     /// While the key field still holds the stored key, and nothing else
-    /// (an error or "API key saved") is reported under it.
+    /// (an error, a keychain warning or "API key saved") is reported under it.
     var showsSavedKeyHint: Bool {
-        hasSavedKey && failureMessage == nil && !showsSavedSuccess
+        hasSavedKey && failureMessage == nil && !showsSavedSuccess && keychainFailure == nil
             && draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) == committed.apiKey
     }
 
