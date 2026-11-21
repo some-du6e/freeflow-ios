@@ -92,7 +92,7 @@ struct RecorderView: View {
             if outcome.isNothingToInsert {
                 "No speech detected"
             } else if outcome.handedOff {
-                "Swipe back to return to your app"
+                Self.handedOffTitle
             } else if outcome.keyboardStoppedWaiting {
                 "Not sent to the keyboard"
             } else {
@@ -120,9 +120,7 @@ struct RecorderView: View {
             nil
         case .finished(let outcome):
             if outcome.handedOff {
-                outcome.isNothingToInsert
-                    ? "Swipe back to return to your app. There was nothing to insert."
-                    : "The FreeFlow keyboard inserts the text when it reappears. If it doesn't, use Insert Last on the keyboard."
+                outcome.isNothingToInsert ? Self.handedOffNothingSubtitle : Self.handedOffSubtitle
             } else if outcome.keyboardStoppedWaiting {
                 outcome.isNothingToInsert
                     ? "There was nothing to insert."
@@ -193,6 +191,25 @@ struct RecorderView: View {
         }
     }
 
+    // MARK: Handed-off copy
+
+    static let handedOffTitle = "Swipe back to your app"
+    /// The keyboard inserts a handed-off result on its own only in a field
+    /// it can confirm is the one FreeFlow was opened from. Anywhere else, or
+    /// when it can't tell, it offers Insert from FreeFlow, which never
+    /// presses return.
+    static let handedOffSubtitle =
+        "FreeFlow inserts the text there if it can tell it's the same field; otherwise tap Insert from FreeFlow on the keyboard."
+    static let handedOffNothingSubtitle = "Swipe back to your app. There was nothing to insert."
+
+    /// The result card's note on "press enter": the test field gets return,
+    /// and a handed-off result gets it only where the keyboard inserts it on
+    /// its own, in the same field.
+    static func returnNote(for outcome: RecorderOutcome) -> String? {
+        guard outcome.pressEnter else { return nil }
+        return outcome.handedOff ? "Presses Return only in the same field" : "Then presses Return"
+    }
+
     static func elapsedText(since start: Date?, now: Date) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(start ?? now)))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
@@ -210,8 +227,8 @@ struct RecorderView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if outcome.pressEnter {
-                Label("Then presses Return", systemImage: "return")
+            if let returnNote = Self.returnNote(for: outcome) {
+                Label(returnNote, systemImage: "return")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

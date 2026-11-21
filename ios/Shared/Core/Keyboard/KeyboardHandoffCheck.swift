@@ -55,9 +55,9 @@ struct KeyboardHandoffCheckReport: Equatable {
 ///
 /// No decision here deletes a fresh result on the strength of a read that
 /// says nobody wants it, and the check itself never removes the result it
-/// hands over: in CI, iOS stopped a keyboard process right after an older,
-/// destructive check had taken a result, and the result was lost, leaving
-/// the next keyboard waiting for good.
+/// hands over: in CI, keyboard processes died right after an older,
+/// destructive check had taken a result, so the result was lost and the next
+/// keyboard waited for good.
 enum KeyboardHandoffCheck {
     /// The machine event for what the store holds now.
     /// - Nothing awaited: `.handoffAbsent`. No keyboard inserts a result
@@ -65,7 +65,7 @@ enum KeyboardHandoffCheck {
     ///   dictation text on one cross-process read that nobody wants it is
     ///   what this check never does. (CI's logs never caught such a read
     ///   lagging; the lost results came from a destructive read in a keyboard
-    ///   process that iOS then stopped.) FreeFlow can leave such a result if
+    ///   process that then died.) FreeFlow can leave such a result if
     ///   a keyboard lets go of its session while the app is saving it. A
     ///   check removes it once it can never be inserted (expired or
     ///   unreadable); the app's cleanup when it becomes active and Clear

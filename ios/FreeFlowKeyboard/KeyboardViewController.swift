@@ -21,8 +21,8 @@ final class KeyboardViewController: UIInputViewController {
     /// dictations and moves to whichever controller is on screen.
     private static var processCapture: WebAudioCapture?
     /// For the handoff log: how long this process has run, and how many
-    /// controllers it has loaded. In CI, iOS stopped long-lived keyboard
-    /// processes right after a check read the app's result.
+    /// controllers it has loaded. In CI, fresh and long-lived keyboard
+    /// processes alike died right after a check found the app's result.
     private static let processStartedAt = Date()
     private static var controllersLoaded = 0
     private var controllerNumber = 0
@@ -531,16 +531,15 @@ final class KeyboardViewController: UIInputViewController {
         )
     }
 
-    /// `textDocumentProxy.documentIdentifier`, or nil while the host hasn't
-    /// given the field one. UIKit declares it non-null, so Swift imports it
-    /// as `UUID` and traps if it is nil, which it can be before the host's
-    /// input session is ready. Read through its getter instead, it comes
-    /// back as an optional.
+    /// The field's identifier, or nil while the host hasn't given it one.
+    /// Every read of `documentIdentifier` goes through this: UIKit declares
+    /// it non-null, so a direct read traps on nil (see
+    /// `KeyboardDictationDocument.identifier(of:getter:)`).
     private var currentDocumentIdentifier: UUID? {
-        let proxy = textDocumentProxy
-        let getter = #selector(getter: UITextDocumentProxy.documentIdentifier)
-        guard proxy.responds(to: getter) else { return nil }
-        return (proxy.perform(getter)?.takeUnretainedValue() as? NSUUID).map { $0 as UUID }
+        KeyboardDictationDocument.identifier(
+            of: textDocumentProxy,
+            getter: #selector(getter: UITextDocumentProxy.documentIdentifier)
+        )
     }
 
     /// `currentDocument()` for a handoff arrival, logged without content:

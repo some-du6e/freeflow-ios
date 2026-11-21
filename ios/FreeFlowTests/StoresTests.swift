@@ -117,8 +117,8 @@ final class StoresTests: XCTestCase {
     // MARK: - PendingDictationStore
 
     func testPendingResultStaysUntilTheKeyboardLetsGo() throws {
-        // Reading never removes it, so a keyboard process that iOS stops
-        // before it inserts the result loses nothing; the keyboard removes
+        // Reading never removes it, so a keyboard process that dies before
+        // it inserts the result loses nothing; the keyboard removes
         // it when it uses it or lets it go (stopAwaiting).
         let defaults = try makeDefaults()
         let store = PendingDictationStore(defaults: defaults)

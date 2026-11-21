@@ -18,16 +18,17 @@ import XCTest
 /// The round trip runs twice in each CI run: first in the UI bundle, with a
 /// fresh keyboard process (FreeFlowFallbackFromSafariTests), and last, after
 /// the other keyboard tests have kept one keyboard process alive for
-/// minutes (FreeFlowWarmKeyboardFallbackTests). When Safari came back, briefly
-/// showed the keyboard and then dropped the address edit, the brief
-/// keyboard's check took FreeFlow's result out of the store, and iOS stopped
-/// that keyboard process before it could use it. The next keyboard found the
-/// session still awaited and nothing stored, and waited for good (CI,
-/// 2026-11-21, in either order). The check now leaves the result in the store
-/// until the keyboard uses it or lets it go, and an offer hidden within
-/// KeyboardDictationMachine.offerReleaseGrace of showing keeps it for the
-/// next keyboard (KeyboardHandoffCheck, KeyboardDictationMachine
-/// .handoffSessionID). Both runs must succeed. Running before
+/// minutes (FreeFlowWarmKeyboardFallbackTests). In CI (2026-11-21), keyboard
+/// processes that came up with FreeFlow's result waiting died right after
+/// finding it, while reading the host field in viewWillAppear, and Safari
+/// then needed a tap on its address field. The older check had already
+/// taken the result out of the store, so it was lost and the next keyboard
+/// waited for good, in either order. Now the check leaves the result in the
+/// store until the keyboard uses it or lets it go (KeyboardHandoffCheck,
+/// KeyboardDictationMachine.handoffSessionID), the keyboard reads the
+/// field's identifier as an optional
+/// (KeyboardDictationDocument.identifier(of:getter:)) and checks once it is
+/// up, and both runs must succeed. Running before
 /// FreeFlowKeyboardSetupTests, the first one repairs the keyboard's setup
 /// in Settings itself when CI's simulator preparation didn't take, as
 /// openFreeFlowKeyboard does.
@@ -155,10 +156,15 @@ class FreeFlowSafariFallbackTestCase: FreeFlowKeyboardTestCase {
             evidence: [app]
         )
         // The press-enter scenario reached the result, so the keyboard gets a
-        // result that asks for return.
-        let pressesReturn = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label CONTAINS %@", "Then presses Return"))
-        XCTAssertTrue(pressesReturn.firstMatch.exists, "The handed-off result doesn't ask for return")
+        // result that asks for return. The recorder promises neither the
+        // insertion nor return: the keyboard presses return only when it
+        // inserts the text on its own, in the same field.
+        let returnNote = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "Presses Return only in the same field"))
+        XCTAssertTrue(returnNote.firstMatch.exists, "The handed-off result doesn't say when return is pressed")
+        let explanation = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "tap Insert from FreeFlow on the keyboard"))
+        XCTAssertTrue(explanation.firstMatch.exists, "The handed-off screen doesn't point to Insert from FreeFlow")
         captureNamed("fallback-app-handed-off")
 
         // Back to Safari, as the recorder says.

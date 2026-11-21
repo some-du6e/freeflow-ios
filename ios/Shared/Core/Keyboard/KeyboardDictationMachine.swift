@@ -69,6 +69,26 @@ struct KeyboardDictationDocument: Equatable {
     var textBeforeCursor: String?
 }
 
+extension KeyboardDictationDocument {
+    /// A text document proxy's `documentIdentifier`, or nil while the host
+    /// hasn't given its field one. The keyboard reads every identifier
+    /// through this. UIKit declares the property non-null, so a direct read
+    /// imports it as `UUID` and traps on nil, which it can be before the
+    /// host's input session is ready. (In CI, keyboards died while reading
+    /// the field in viewWillAppear with a handoff result waiting.) Through
+    /// its getter, which the keyboard passes in as
+    /// `#selector(getter: UITextDocumentProxy.documentIdentifier)` so this
+    /// stays Foundation-only, it comes back as an optional. An unknown
+    /// identifier never proves a field match (`documentMatches`), so nothing
+    /// handed back is inserted on its own, and return isn't pressed, on it.
+    static func identifier(of proxy: NSObjectProtocol, getter: Selector) -> UUID? {
+        guard proxy.responds(to: getter), let value = proxy.perform(getter)?.takeUnretainedValue() else {
+            return nil
+        }
+        return (value as? NSUUID).map { $0 as UUID }
+    }
+}
+
 /// A history entry the keyboard wants written. The controller turns it into a
 /// `HistoryEntry` with a fresh ID, which keeps the machine deterministic.
 struct KeyboardDictationHistoryDraft: Equatable {
@@ -205,8 +225,8 @@ struct KeyboardDictationMachine: Equatable {
     static let handoffCheckInterval: TimeInterval = 1
     /// How long an Insert from FreeFlow offer must have been on screen for
     /// hiding the keyboard to end it. A briefer offer keeps its result in the
-    /// store for the next keyboard: in CI, Safari showed the keyboard for an
-    /// instant on return and dropped it, and iOS stopped that process.
+    /// store for the next keyboard, in case the host dropped the keyboard as
+    /// soon as it showed it.
     static let offerReleaseGrace: TimeInterval = 2
     /// Time the app gets to transcribe after its recorder stops.
     static let handoffProcessingMargin: TimeInterval = 120
@@ -364,8 +384,8 @@ struct KeyboardDictationMachine: Equatable {
     /// The handoff session this keyboard still has a use for in the store:
     /// the one it waits for, or the one whose result it offers with Insert
     /// from FreeFlow. An offered result stays in the store until it is used
-    /// or let go, so a keyboard process that iOS stops while offering it
-    /// doesn't lose it; the next keyboard finds it and offers it again.
+    /// or let go, so a keyboard process that dies while offering it doesn't
+    /// lose it; the next keyboard finds it and offers it again.
     var handoffSessionID: UUID? {
         switch phase {
         case .waitingForApp(let sessionID, _, _):
@@ -928,7 +948,7 @@ struct KeyboardDictationMachine: Equatable {
     ) -> [KeyboardDictationEffect] {
         guard !isBusy else { return [] }
         // The check reads the result without removing it, so a keyboard that
-        // iOS stops before it acts loses nothing. Every outcome but the offer
+        // dies before it acts loses nothing. Every outcome but the offer
         // below is final, so it lets go of the session and its result, before
         // any insertion, as the Insert from FreeFlow tap does: a keyboard
         // stopped in between then loses this result rather than leaving it
@@ -969,8 +989,8 @@ struct KeyboardDictationMachine: Equatable {
         // a new dictation, Insert last can still add it. The result stays in
         // the store, still awaited, until the tap, Dismiss, a new dictation,
         // Insert last, expiry or hiding the keyboard once the offer has shown
-        // for `offerReleaseGrace` lets it go, so a keyboard that iOS stops
-        // while offering it doesn't lose it.
+        // for `offerReleaseGrace` lets it go, so a keyboard that dies while
+        // offering it doesn't lose it.
         phase = .pendingInsert(pending, until: pending.createdAt + PendingDictation.maxAge)
         offerShownAt = isVisible ? now : nil
         return [.rememberForInsertLast(text: pending.text, at: now), announcement]

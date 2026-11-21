@@ -176,7 +176,7 @@ What stays on the phone:
   - it expires (3 minutes) and the keyboard next appears or FreeFlow next
     opens.
 
-  A keyboard that iOS stops before it uses the text, or that shows for only a
+  A keyboard that closes before it uses the text, or that shows for only a
   moment, leaves it for the next keyboard. That keyboard inserts it in the
   field you opened FreeFlow from and offers it in any other field or app.
 - **Recordings:** deleted after transcription. After a failed upload the app

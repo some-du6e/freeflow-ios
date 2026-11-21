@@ -642,6 +642,34 @@ final class AppRecorderModelTests: XCTestCase {
         XCTAssertEqual(RecorderView.elapsedText(since: nil, now: start), "0:00")
     }
 
+    @MainActor
+    func testHandedOffCopyPromisesNeitherInsertionNorReturn() {
+        // The keyboard inserts a handed-off result on its own, and presses
+        // return, only in a field it can confirm. Anywhere else it offers
+        // Insert from FreeFlow, which never presses return.
+        XCTAssertEqual(RecorderView.handedOffTitle, "Swipe back to your app")
+        XCTAssertEqual(
+            RecorderView.handedOffSubtitle,
+            "FreeFlow inserts the text there if it can tell it's the same field; otherwise tap Insert from FreeFlow on the keyboard."
+        )
+        XCTAssertFalse(RecorderView.handedOffSubtitle.contains("Insert Last"))
+
+        var outcome = RecorderOutcome(
+            text: "Synthetic handoff.",
+            rawTranscript: "synthetic handoff press enter",
+            pressEnter: true,
+            route: .cleanup,
+            usedRawFallback: false,
+            handedOff: true
+        )
+        XCTAssertEqual(RecorderView.returnNote(for: outcome), "Presses Return only in the same field")
+        // The test field does get return.
+        outcome.handedOff = false
+        XCTAssertEqual(RecorderView.returnNote(for: outcome), "Then presses Return")
+        outcome.pressEnter = false
+        XCTAssertNil(RecorderView.returnNote(for: outcome))
+    }
+
     func testOutcomeTreatsPressEnterAsSomethingToInsert() {
         let enterOnly = RecorderOutcome(text: "", rawTranscript: "press enter", pressEnter: true, route: .empty, usedRawFallback: false, handedOff: true)
         XCTAssertFalse(enterOnly.isNothingToInsert)

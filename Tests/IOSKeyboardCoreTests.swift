@@ -40,6 +40,7 @@ enum IOSKeyboardCoreTests {
         testFallbackHandoffFlow()
         testHandoffResultInsertion()
         testHandoffFieldMatchGatesAutoInsert()
+        testUnknownFieldIdentifierNeverAutoInserts()
         testExpiredHandoffResultEndsTheWait()
         testHandoffCTANeverPressesReturn()
         testUnconfirmedFieldWithNothingToInsertShowsNoCTA()
@@ -989,6 +990,42 @@ enum IOSKeyboardCoreTests {
         TestSupport.expect(!KeyboardDictationMachine.documentMatches(expected: fieldA, current: nil), "An unknown current field never matches")
     }
 
+    private static func testUnknownFieldIdentifierNeverAutoInserts() {
+        // The keyboard reads the field's identifier through its getter, so a
+        // field the host hasn't given one yet reads as unknown instead of
+        // trapping, as a direct read of the non-null property would.
+        let proxy = FakeTextDocumentProxy()
+        let getter = #selector(getter: FakeTextDocumentProxy.documentIdentifier)
+        TestSupport.expect(
+            KeyboardDictationDocument.identifier(of: proxy, getter: getter) == nil,
+            "A field with no identifier yet reads as unknown"
+        )
+        proxy.documentIdentifier = fieldA as NSUUID
+        TestSupport.expectEqual(KeyboardDictationDocument.identifier(of: proxy, getter: getter), fieldA)
+        TestSupport.expect(
+            KeyboardDictationDocument.identifier(of: NSObject(), getter: getter) == nil,
+            "A proxy without the property reads as unknown"
+        )
+
+        // Unknown never matches, on either side, so a handed-back result is
+        // never inserted on its own and return is never pressed: Insert from
+        // FreeFlow offers it.
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "Running late.", pressEnter: true)
+        for (expected, current) in [(fieldA, nil), (nil, fieldA), (nil, nil)] as [(UUID?, UUID?)] {
+            TestSupport.expect(
+                !KeyboardDictationMachine.documentMatches(expected: expected, current: current),
+                "An unknown field never matches"
+            )
+            var machine = readyMachine()
+            let effects = machine.handle(
+                .handoffResultArrived(pending, expectedDocumentID: expected, document: document(current)),
+                now: at(12)
+            )
+            TestSupport.expectEqual(insertions(effects), [])
+            TestSupport.expectEqual(status(machine), .pendingInsert)
+        }
+    }
+
     private static func testExpiredHandoffResultEndsTheWait() {
         // `PendingDictationStore.result(for:now:)` reports `.expired` for an old result
         // (it used to say "nothing yet"), and the keyboard hands it over like
@@ -1242,10 +1279,9 @@ enum IOSKeyboardCoreTests {
             return machine
         }
 
-        // Safari showed the keyboard for an instant on return and dropped it
-        // (CI, 2026-11-21): an offer hidden within the grace keeps its result
-        // in the store, so the next keyboard, maybe in a new process, offers
-        // it again.
+        // A host that drops the keyboard as soon as it shows it: an offer
+        // hidden within the grace keeps its result in the store, so the next
+        // keyboard, maybe in a new process, offers it again.
         var flashed = offering()
         TestSupport.expectEqual(flashed.handle(.disappeared, now: at(12) + grace - 0.1), [])
         TestSupport.expectEqual(status(flashed), .pendingInsert)
@@ -2059,4 +2095,10 @@ private final class SyntheticHandoffStore: KeyboardHandoffStore {
         nextTake = PendingDictationTake.none
         stored = PendingDictationPeek.none
     }
+}
+
+/// Stands in for `UITextDocumentProxy`, whose `documentIdentifier` UIKit
+/// declares non-null although a host may not have given its field one yet.
+private final class FakeTextDocumentProxy: NSObject {
+    @objc var documentIdentifier: NSUUID?
 }

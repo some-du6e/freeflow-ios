@@ -152,8 +152,8 @@ final class PendingDictationStore {
     /// `.expired` once it is older than `PendingDictation.maxAge`, so the
     /// keyboard can tell an expired result from one that hasn't arrived. The
     /// keyboard removes it when it uses it or lets it go
-    /// (`KeyboardHandoffCheck.stopAwaiting`), so a keyboard process that iOS
-    /// stops in between loses nothing. A result for another session is left
+    /// (`KeyboardHandoffCheck.stopAwaiting`), so a keyboard process that dies
+    /// in between loses nothing. A result for another session is left
     /// alone while fresh and removed once stale.
     func result(for sessionID: UUID, now: Date) -> PendingDictationTake {
         guard let pending = loadResult() else { return .none }
