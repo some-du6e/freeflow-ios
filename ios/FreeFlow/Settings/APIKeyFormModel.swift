@@ -73,6 +73,17 @@ final class APIKeyFormModel: ObservableObject {
         status == .saved && draft.showsSavedSuccess(successful, committed: committed)
     }
 
+    /// Says a key is stored without showing any of it: the secure field
+    /// holding the stored key shows only dots, and screenshots blank it.
+    static let savedKeyHint = "A key is saved. Enter a new one to replace it."
+
+    /// While the key field still holds the stored key, and nothing else
+    /// (an error or "API key saved") is reported under it.
+    var showsSavedKeyHint: Bool {
+        hasSavedKey && failureMessage == nil && !showsSavedSuccess
+            && draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) == committed.apiKey
+    }
+
     var failureMessage: String? {
         if case .failed(let message) = status {
             return message

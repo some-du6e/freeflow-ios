@@ -248,6 +248,57 @@ final class AppAPIKeyFormTests: XCTestCase {
         XCTAssertNil(stores.defaults.string(forKey: FreeFlowSettingKey.apiBaseURL))
     }
 
+    /// The onboarding page says a key is saved instead of leaving a field of
+    /// dots unexplained, and never shows any of the key.
+    @MainActor
+    func testAStoredKeyShowsTheSavedHintWithoutTheKey() async {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        stores.credentials.storedAPIKey = "synthetic-saved-key"
+        let form = makeForm(stores, AppValidationRecorder())
+
+        form.presentIfNeeded()
+
+        XCTAssertTrue(form.showsSavedKeyHint)
+        XCTAssertEqual(APIKeyFormModel.savedKeyHint, "A key is saved. Enter a new one to replace it.")
+        XCTAssertFalse(APIKeyFormModel.savedKeyHint.contains("synthetic"), "The hint never shows the key")
+
+        form.draft.apiKey = ""
+        XCTAssertFalse(form.showsSavedKeyHint, "A cleared field is being replaced")
+        form.draft.apiKey = "synthetic-new-key"
+        XCTAssertFalse(form.showsSavedKeyHint, "A new key is being typed")
+
+        let saved = await form.save()
+        XCTAssertTrue(saved)
+        XCTAssertTrue(form.showsSavedSuccess)
+        XCTAssertFalse(form.showsSavedKeyHint, "\"API key saved\" says it already")
+    }
+
+    @MainActor
+    func testNoStoredKeyShowsNoSavedHint() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        let form = makeForm(stores, AppValidationRecorder())
+
+        form.presentIfNeeded()
+        XCTAssertFalse(form.showsSavedKeyHint)
+
+        form.draft.apiKey = "synthetic-typed-key"
+        XCTAssertFalse(form.showsSavedKeyHint, "A typed key isn't a saved one")
+    }
+
+    @MainActor
+    func testUnreadableKeychainShowsNoSavedHint() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+        stores.credentials.readFailure = .unavailable
+        let form = makeForm(stores, AppValidationRecorder())
+
+        form.presentIfNeeded()
+
+        XCTAssertFalse(form.showsSavedKeyHint)
+    }
+
     @MainActor
     func testUnreadableKeychainIsSurfaced() {
         let stores = AppTestStores()

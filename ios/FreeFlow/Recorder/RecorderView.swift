@@ -47,11 +47,12 @@ struct RecorderView: View {
                 .accessibilityIdentifier("freeflow.recorder.done")
             }
             Spacer()
-            Text(model.mode.sessionID == nil ? "Dictate without the keyboard" : "Dictating for the FreeFlow keyboard")
+            Text(model.topBarCaption)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .accessibilityIdentifier("freeflow.recorder.caption")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)

@@ -109,6 +109,12 @@ struct OnboardingAPIKeyPage: View {
                     .accessibilityIdentifier("freeflow.onboarding.apiKeyField")
                 APIKeyStatusLabel(form: form)
                     .font(.caption)
+                if form.showsSavedKeyHint {
+                    Text(APIKeyFormModel.savedKeyHint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("freeflow.onboarding.apiKeySavedHint")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

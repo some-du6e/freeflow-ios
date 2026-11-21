@@ -186,6 +186,11 @@ final class RecorderModel: ObservableObject, Identifiable {
     static let noAudioBuffersMessage = "No audio buffers were received from the microphone."
     /// macOS wording for a recording with no frames.
     static let noAudioRecordedMessage = "No audio recorded"
+    /// Top bar captions: who the recording is for.
+    static let inAppCaption = "Dictate without the keyboard"
+    static let keyboardCaption = "Dictating for the FreeFlow keyboard"
+    /// A `freeflow://` link the keyboard didn't ask for opened the recorder.
+    static let linkCaption = "Opened from a link"
 
     // Identifiable through the default `ObjectIdentifier` id, which is
     // nonisolated; the app presents one recorder object per session.
@@ -203,6 +208,10 @@ final class RecorderModel: ObservableObject, Identifiable {
     /// in FreeFlow or the keyboard's awaited session start it; a recorder
     /// any other `freeflow://` link opened waits idle for its Start button.
     let startsOnAppear: Bool
+    /// Whether the keyboard asked for this recording: it awaited the session
+    /// when the recorder opened, or reopened FreeFlow for it since. A
+    /// recorder any other link opened isn't, until then.
+    @Published private(set) var isForWaitingKeyboard: Bool
 
     private let dependencies: RecorderDependencies
     private var recorder: AppAudioRecording?
@@ -223,6 +232,21 @@ final class RecorderModel: ObservableObject, Identifiable {
         self.mode = mode
         self.dependencies = dependencies
         self.startsOnAppear = startsOnAppear
+        self.isForWaitingKeyboard = mode.sessionID != nil && startsOnAppear
+    }
+
+    /// The top bar's caption. Only a recording the keyboard asked for says
+    /// it is for the keyboard; one that went to the keyboard anyway (it
+    /// started waiting for the session after all) does too.
+    var topBarCaption: String {
+        guard mode.sessionID != nil else { return Self.inAppCaption }
+        if isForWaitingKeyboard {
+            return Self.keyboardCaption
+        }
+        if case .finished(let outcome) = phase, outcome.handedOff {
+            return Self.keyboardCaption
+        }
+        return Self.linkCaption
     }
 
     /// Recording, processing, or waiting on the permission prompt.
@@ -257,6 +281,9 @@ final class RecorderModel: ObservableObject, Identifiable {
     /// still waiting for it: start a recorder that was waiting for a tap, or
     /// give a failed recording another try.
     func resumeForAwaitedSession() {
+        if mode.sessionID != nil {
+            isForWaitingKeyboard = true
+        }
         switch phase {
         case .idle:
             start()

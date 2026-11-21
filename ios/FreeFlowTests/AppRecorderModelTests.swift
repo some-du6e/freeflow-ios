@@ -279,6 +279,52 @@ final class AppRecorderModelTests: XCTestCase {
         }
     }
 
+    /// The top bar says the recording is for the keyboard only when the
+    /// keyboard asked for it.
+    @MainActor
+    func testTopBarSaysWhoTheRecordingIsFor() {
+        let spy = AppRecorderSpy()
+        let inApp = RecorderModel(mode: .inApp, dependencies: spy.dependencies(), startsOnAppear: true)
+        XCTAssertEqual(inApp.topBarCaption, "Dictate without the keyboard")
+
+        let awaited = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies(), startsOnAppear: true)
+        XCTAssertTrue(awaited.isForWaitingKeyboard)
+        XCTAssertEqual(awaited.topBarCaption, "Dictating for the FreeFlow keyboard")
+
+        let link = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies(), startsOnAppear: false)
+        link.startIfNeeded()
+        XCTAssertFalse(link.isForWaitingKeyboard)
+        XCTAssertEqual(link.topBarCaption, "Opened from a link", "A link the keyboard didn't ask for")
+        XCTAssertEqual(RecorderModel.linkCaption, "Opened from a link")
+
+        link.resumeForAwaitedSession()
+        XCTAssertTrue(link.isForWaitingKeyboard)
+        XCTAssertEqual(link.topBarCaption, "Dictating for the FreeFlow keyboard", "The keyboard asked for it after all")
+    }
+
+    /// A link's recording that the keyboard never waited for keeps the
+    /// link's caption to the end, next to "Not sent to the keyboard".
+    @MainActor
+    func testLinkRecordingTheKeyboardNeverAwaitedKeepsTheLinkCaption() async throws {
+        let spy = AppRecorderSpy()
+        spy.awaitedSessionID = nil
+        spy.results = [.success(appSyntheticResult(text: "Hello from the synthetic test.", pressEnter: false))]
+        let model = RecorderModel(mode: .handoff(sessionID: UUID()), dependencies: spy.dependencies(), startsOnAppear: false)
+
+        model.startIfNeeded()
+        model.start()
+        let recorder = try XCTUnwrap(spy.lastRecorder)
+        recorder.onFirstAudio?()
+        let isRecording = await appWaitUntil { model.phase == .recording }
+        XCTAssertTrue(isRecording)
+        model.stop()
+        let finished = await appWaitUntil { model.phase.accessibilityName == "not-handed-off" }
+        XCTAssertTrue(finished, "phase is \(model.phase)")
+
+        XCTAssertEqual(model.topBarCaption, "Opened from a link")
+        XCTAssertTrue(spy.pending.isEmpty, "Nothing is handed to a keyboard")
+    }
+
     @MainActor
     func testKeyboardAskingAgainStartsAWaitingRecorder() {
         let spy = AppRecorderSpy()
