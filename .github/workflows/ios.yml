@@ -124,7 +124,7 @@ jobs:
           nohup python3 .github/scripts/mock-openai-server.py \
             --host 127.0.0.1 --port 8765 --latency 2 \
             --log "$DIAGNOSTICS_PATH/mock-provider-requests.jsonl" \
-            > "$DIAGNOSTICS_PATH/mock-provider.log" 2>&1 &
+            < /dev/null > "$DIAGNOSTICS_PATH/mock-provider.log" 2>&1 &
           echo "MOCK_PROVIDER_PID=$!" >> "$GITHUB_ENV"
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8765/healthz; then
@@ -367,7 +367,7 @@ jobs:
       - name: Start the mock provider
         run: |
           nohup python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 \
-            > "$RUNNER_TEMP/mock-provider.log" 2>&1 &
+            < /dev/null > "$RUNNER_TEMP/mock-provider.log" 2>&1 &
           for attempt in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8765/healthz && exit 0
             sleep 1

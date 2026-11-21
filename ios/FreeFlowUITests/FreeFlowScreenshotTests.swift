@@ -100,7 +100,7 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
         }
 
         try tapTab(FreeFlowAccessibilityID.App.homeTab, in: app)
-        try recordInApp(app, expecting: "done", named: "done")
+        try recordInApp(app, flow: "in-app", expecting: "done")
         let close = element(FreeFlowAccessibilityID.Recorder.done, in: app)
         if close.waitForExistence(timeout: 5) {
             close.tap()
@@ -118,7 +118,7 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
         let app = launchFreeFlow(options)
         let field = element(FreeFlowAccessibilityID.App.testField, in: app)
         try require(field.waitForExistence(timeout: Self.firstQueryTimeout), "Home didn't appear", evidence: [app])
-        try recordInApp(app, expecting: "error", named: "error")
+        try recordInApp(app, flow: "failing", expecting: "error")
     }
 
     /// The app's half of the keyboard fallback (DESIGN §5.4): the URL the
@@ -162,7 +162,7 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
     /// moment, stops, and screenshots the recording, processing and final
     /// states.
     @MainActor
-    private func recordInApp(_ app: XCUIApplication, expecting finalState: String, named name: String) throws {
+    private func recordInApp(_ app: XCUIApplication, flow: String, expecting finalState: String) throws {
         let dictate = element(FreeFlowAccessibilityID.App.dictateInApp, in: app)
         try require(dictate.waitForExistence(timeout: 10), "Home has no Dictate Without the Keyboard button",
                     evidence: [app])
@@ -174,10 +174,10 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
             evidence: [app]
         )
         Thread.sleep(forTimeInterval: 1.5)
-        captureNamed("app-recorder-recording-\(appearance)")
+        captureNamed("app-recorder-\(flow)-recording-\(appearance)")
         element(FreeFlowAccessibilityID.Recorder.stop, in: app).tap()
         if waitUntil(timeout: 10, { status.textValue == "processing" }) {
-            captureNamed("app-recorder-processing-\(appearance)")
+            captureNamed("app-recorder-\(flow)-processing-\(appearance)")
         }
         try require(
             waitUntil(timeout: 45) { status.textValue == finalState },
@@ -185,7 +185,7 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
             evidence: [app]
         )
         Thread.sleep(forTimeInterval: 0.5)
-        captureNamed("app-recorder-\(name)-\(appearance)")
+        captureNamed("app-recorder-\(flow)-\(finalState)-\(appearance)")
     }
 
     @MainActor
