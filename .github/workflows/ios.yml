@@ -122,7 +122,7 @@ jobs:
           # The latency, like a real provider's, keeps the keyboard's
           # processing state on screen long enough for the tests to see it.
           nohup python3 .github/scripts/mock-openai-server.py \
-            --host 127.0.0.1 --port 8765 --latency 0.75 \
+            --host 127.0.0.1 --port 8765 --latency 2 \
             --log "$DIAGNOSTICS_PATH/mock-provider-requests.jsonl" \
             > "$DIAGNOSTICS_PATH/mock-provider.log" 2>&1 &
           echo "MOCK_PROVIDER_PID=$!" >> "$GITHUB_ENV"

@@ -23,6 +23,7 @@ enum FreeFlowAccessibilityID {
         static let homeTab = "freeflow.app.tab.home"
         static let historyTab = "freeflow.app.tab.history"
         static let settingsTab = "freeflow.app.tab.settings"
+        static let dictateInApp = "freeflow.app.dictateInApp"
     }
 
     enum Onboarding {
@@ -33,6 +34,7 @@ enum FreeFlowAccessibilityID {
     }
 
     enum Recorder {
+        static let done = "freeflow.recorder.done"
         static let stop = "freeflow.recorder.stop"
         static let cancel = "freeflow.recorder.cancel"
         static let status = "freeflow.recorder.status"

@@ -186,12 +186,17 @@ struct KeyboardDriver {
     /// The status element's state name and the text it shows, or nil when
     /// the FreeFlow keyboard isn't showing.
     var status: (state: String, text: String)? {
-        // One snapshot reads both, so short states aren't missed between queries.
-        guard let element = keyboardElement(FreeFlowAccessibilityID.Keyboard.status),
-              let snapshot = try? element.snapshot() else {
-            return nil
+        // One snapshot query reads both, with no separate existence check:
+        // each query takes up to a second while the keyboard is busy, and
+        // short states would pass between them.
+        for host in hosts {
+            let element = host.descendants(matching: .any)
+                .matching(identifier: FreeFlowAccessibilityID.Keyboard.status).firstMatch
+            if let snapshot = try? element.snapshot() {
+                return ((snapshot.value as? String) ?? "", snapshot.label)
+            }
         }
-        return ((snapshot.value as? String) ?? "", snapshot.label)
+        return nil
     }
 
     /// Polls the status until it is one of `targets`, noting every state it
