@@ -5,15 +5,21 @@ import XCTest
 /// the keyboard's capture fail to start, so it offers to record in FreeFlow.
 /// Its Open FreeFlow button opens `freeflow://dictate?session=` through the
 /// responder chain (KeyboardAppOpener) with the session it now awaits.
-/// FreeFlow records at once, hands the result back through the App Group,
-/// and the keyboard inserts it when Safari comes back: on its own in the
-/// field it was opened from, or through Insert from FreeFlow, which never
-/// presses return. The mock's press-enter scenario makes the result ask for
-/// return, so the test can tell.
+/// FreeFlow records at once and hands the result back through the App Group.
 ///
+/// Back in Safari, the keyboard can't confirm it is the field FreeFlow was
+/// opened from: on the CI simulator, Safari's address field comes back with
+/// a new document identifier, so the keyboard holds the result for Insert
+/// from FreeFlow instead of inserting it on its own (KeyboardDictationMachine
+/// .documentMatches). The test requires that path. The mock's press-enter
+/// scenario makes the result ask for return, which Insert from FreeFlow must
+/// not press.
+///
+/// The class name sorts after FreeFlowKeyboardSetupTests, which repairs the
+/// keyboard's setup in Settings if CI's simulator preparation didn't take.
 /// The app's synthetic tone stands in for speech, so this doesn't replace
 /// the check on a physical iPhone that AGENTS.md asks for.
-final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
+final class FreeFlowSafariFallbackTests: FreeFlowKeyboardTestCase {
     static let fallbackText = "Can't record in the keyboard here. Record in FreeFlow instead."
     static let pendingInsertText = "FreeFlow finished. Tap Insert from FreeFlow to add it here."
     static let insertedWithoutReturnText = "Inserted from FreeFlow. Return wasn't pressed."
@@ -28,6 +34,13 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
         options.syntheticCapture = true
         options.apiKey = MockProvider.apiKey(for: .pressEnter)
         let app = launchFreeFlow(options)
+        defer {
+            // Leave the keyboard able to record for whatever runs next, even
+            // a single test run on its own.
+            let cleanup = XCUIApplication()
+            cleanup.launchArguments = ["-FreeFlowUITestCaptureUnavailable", "NO"]
+            cleanup.launch()
+        }
         let testField = element(FreeFlowAccessibilityID.App.testField, in: app)
         try require(
             testField.waitForExistence(timeout: Self.firstQueryTimeout),
@@ -105,6 +118,11 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
             "FreeFlow didn't hand the result to the keyboard (status \(status.textValue))",
             evidence: [app]
         )
+        // The press-enter scenario reached the result, so the keyboard gets a
+        // result that asks for return.
+        let pressesReturn = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "Then presses Return"))
+        XCTAssertTrue(pressesReturn.firstMatch.exists, "The handed-off result doesn't ask for return")
         captureNamed("fallback-app-handed-off")
 
         // Back to Safari, as the recorder says.
@@ -123,26 +141,14 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
 
         let back = KeyboardStateTrace()
         let returned = keyboard.waitForStatus([.pendingInsert, .inserted], timeout: 20, trace: back)
-        if returned == .pendingInsert {
-            try finishThroughInsertFromFreeFlow(safari: safari, keyboard: keyboard, trace: back)
-        } else {
-            // The field matched, so the keyboard inserted on its own and,
-            // as the result asked, pressed return: Safari submits the text.
-            let typed = waitUntil(timeout: 10) {
-                back.saw(.inserted) || self.safariAddressText(safari).contains("FreeFlow")
-            }
-            captureNamed("fallback-auto-inserted")
-            try require(
-                typed,
-                "The keyboard neither offered Insert from FreeFlow nor inserted the result: "
-                    + "\(describe(keyboard.status)) (seen: \(back))",
-                evidence: keyboard.hosts
-            )
-            if let message = back.texts[KeyboardDisplayState.inserted.rawValue] {
-                XCTAssertEqual(message, "Inserted from FreeFlow")
-            }
-            report("The keyboard auto-inserted into the field it opened FreeFlow from (seen: \(back))")
-        }
+        try require(
+            returned == .pendingInsert,
+            "Back in Safari the keyboard didn't hold the result for Insert from FreeFlow: "
+                + "\(describe(keyboard.status)) (seen: \(back)). If it inserted on its own, the field kept "
+                + "its document identifier across the switch, which this test expects it not to on the CI simulator.",
+            evidence: keyboard.hosts
+        )
+        try finishThroughInsertFromFreeFlow(safari: safari, keyboard: keyboard, trace: back)
 
         // FreeFlow made the provider calls, not the keyboard, which never recorded.
         let requests = try providerRequests()
@@ -183,6 +189,7 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
                 + "\"\(safariAddressText(safari))\" (seen: \(afterTap))",
             evidence: keyboard.hosts
         )
+        // The "inserted" message lasts 1.5 s, so it is checked when seen.
         if let message = afterTap.texts[KeyboardDisplayState.inserted.rawValue] {
             XCTAssertEqual(message, Self.insertedWithoutReturnText)
         }
@@ -193,7 +200,8 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
                         "The keyboard went away, so return was pressed")
         XCTAssertTrue(safariAddressText(safari).contains(MockProvider.cleanedText),
                       "The address field no longer holds the text, so it was submitted")
-        report("Insert from FreeFlow inserted the text without return (states after the tap: \(afterTap))")
+        report("Insert from FreeFlow inserted the text without return (states after the tap: \(afterTap); "
+            + "message: \(afterTap.texts[KeyboardDisplayState.inserted.rawValue] ?? "missed between queries"))")
     }
 
     /// Taps a FreeFlow keyboard button in whichever app hosts the keyboard.
@@ -207,8 +215,9 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
     }
 
     /// Focuses Safari's address field so a keyboard comes up, and names the
-    /// element that worked. On iOS 26 the address bar sits at the bottom and
-    /// is a button until tapped, so this tries the elements Safari has used.
+    /// element that worked. On iOS 26 the address bar sits at the bottom; the
+    /// CI simulator's Safari exposes a text field named Address, and the rest
+    /// are elements earlier versions used.
     @MainActor
     private func focusSafariAddressField(_ safari: XCUIApplication, keyboard: KeyboardDriver) throws -> String {
         try require(
@@ -227,7 +236,8 @@ final class FreeFlowFallbackTests: FreeFlowKeyboardTestCase {
         ]
         for attempt in 1...3 {
             dismissSafariSheets(safari)
-            for candidate in candidates where candidate.element.waitForExistence(timeout: attempt == 1 ? 5 : 1) {
+            for candidate in candidates
+            where candidate.element.waitForExistence(timeout: attempt == 1 ? 5 : 1) && candidate.element.isHittable {
                 candidate.element.tap()
                 if waitUntil(timeout: 6, { self.keyboardIsUp(keyboard) }) {
                     return candidate.name

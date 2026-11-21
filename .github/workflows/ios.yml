@@ -20,7 +20,9 @@ jobs:
   test:
     name: Build and test (Xcode 26.6, iOS 26.5)
     runs-on: macos-26
-    timeout-minutes: 30
+    # A build of up to 8 minutes, the simulator setup and a 20-minute Test
+    # step, with room left for the reports and the result upload.
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
