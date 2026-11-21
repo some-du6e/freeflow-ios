@@ -7,8 +7,8 @@ transcription and cleanup pipeline as the Mac app, Groq by default, and you
 never leave the app you're typing in.
 
 The macOS app is unaffected: it is still built by the root `Makefile` with
-`swiftc`. Everything iOS lives under `ios/`, except for the shared files
-listed under "Code layout".
+`swiftc`. The iOS code lives under `ios/`. "Code layout" lists the exceptions:
+the shared `Sources/` files, the Core tests in `Tests/`, and the CI tooling.
 
 ## How in-keyboard dictation works
 
@@ -38,12 +38,22 @@ Raycast's iOS keyboard ships this same technique, as do several open-source
 projects (see "Credits"). It is undocumented, though. Apple could close it in
 any iOS release, and App Review may treat it as a grey area.
 
-For those cases there is a **fallback**. If no audio arrives within 2 seconds,
-if capture is unavailable (Lockdown Mode, low memory), or if the page fails,
-the keyboard offers to record in the FreeFlow app instead:
+For those cases there is a **fallback**. The keyboard offers to record in the
+FreeFlow app instead when:
 
-- It opens `freeflow://dictate?session=<id>`. Keyboards can't do this through
-  public API, so it walks the responder chain to the app object.
+- no audio arrives in time: 4 seconds for the first dictation after the
+  keyboard opens, while WebKit's media process starts, and 2 seconds after
+  that;
+- capture is unavailable (Lockdown Mode, low memory);
+- the page fails.
+
+The fallback works like this:
+
+- The keyboard opens `freeflow://dictate?session=<id>`. Keyboards can't do
+  this through public API, so it walks the responder chain to the app object.
+- The app starts recording on its own only for the session the keyboard is
+  waiting for. Any other `freeflow://` link opens an idle recorder that waits
+  for you to tap Start.
 - The app records, processes, and hands the text back through the App Group.
 - iOS has no API for returning to the previous app. You swipe back (or use
   the "◀︎ App" breadcrumb), and the keyboard inserts the result if you're in
@@ -71,7 +81,9 @@ the keyboard offers to record in the FreeFlow app instead:
 | `ios/Shared/Core/` | Foundation-only logic shared by both targets: settings, pipeline routing, history, handoff, the audio core (WAV, PCM, gain, chunk decoding, the capture page source), and the keyboard state machine. The macOS `make test` runner also compiles and tests it. |
 | `ios/Shared/Platform/` | iOS-only shared code: the App Group and keychain stores, and `WebAudioCapture`. |
 | `ios/FreeFlowTests/`, `ios/FreeFlowUITests/` | XCTest unit tests (simulator) and UI tests, including driving the keyboard. |
-| `ios/Config/` | `FreeFlow.xcconfig` (shared settings), `Local.xcconfig.example`, and export options. |
+| `ios/Config/` | `FreeFlow.xcconfig` (shared settings), `Local.xcconfig.example`, and the TestFlight export options. |
+| `Tests/IOS*CoreTests.swift` | `make test` tests for `ios/Shared/Core`, in the house style of `Tests/TestSupport.swift`. Put tests for Core code here, not in `ios/FreeFlowTests`, so `make check` covers them. |
+| `.github/workflows/ios*.yml`, `.github/scripts/`, Makefile `ios-*` targets | CI (simulator tests, screenshots, the TestFlight upload) and the matching local commands. |
 | `../Sources/*.swift` (a listed subset) | The Mac pipeline files, compiled into both iOS targets by explicit reference: `TranscriptionService`, `PostProcessingService`, `LLMAPITransport`, `TranscriptTextCore`, `AppContext`, `LLMCooldownManager`, `ModelConfiguration`, `TemperatureCapabilityCache`, `ContextInferenceFailure`, `TranscriptionErrorPresentationCore`, `NetworkMonitor` and `LiveAudioLevelNormalizer`. `APIConfigurationDraft` goes into the app only. |
 
 The project, `ios/FreeFlow.xcodeproj`, uses folder-synchronized groups, so new
@@ -82,8 +94,9 @@ files under those folders need no project edits. Only the list of shared
 
 Every check runs on GitHub Actions; no local Mac is needed.
 
-- `.github/workflows/ios.yml` runs on pull requests and on pushes to
-  `ios-wip/**`. It does the following:
+- `.github/workflows/ios.yml` runs on pull requests into `main`, on pushes to
+  `ios-wip/**` branches, and by hand (`gh workflow run ios.yml --ref <branch>`).
+  It does the following:
   - builds the app and keyboard for the iOS 26.5 simulator;
   - runs the unit tests, including the WebKit capture tests against the
     simulator's mock microphone;
@@ -96,13 +109,20 @@ Every check runs on GitHub Actions; no local Mac is needed.
 - `make check` (the Mac checks) also compiles and tests the Foundation-only
   code in `ios/Shared/Core`.
 
-On a Mac with Xcode 26 or later:
+On a Mac with Xcode 26 or later, the unit and UI tests run locally after the
+same setup CI does. Use a throwaway simulator: the prepare step writes its
+privacy database and reboots it.
 
 ```bash
-make ios-build                    # simulator build, ad-hoc signed
-make ios-test                     # unit + UI tests on the default simulator
-make ios-mock-provider            # the mock provider, for local UI tests
+UDID=<a booted iPhone 17 simulator's UDID>
+make ios-build IOS_DESTINATION="platform=iOS Simulator,id=$UDID"
+make ios-simulator-prepare IOS_SIMULATOR_UDID=$UDID  # keyboard + Full Access
+make ios-mock-provider                               # leave running in a second terminal
+make ios-test IOS_DESTINATION="platform=iOS Simulator,id=$UDID"
 ```
+
+`make ios-test` also runs the screenshot suite, which CI runs as a separate
+job, so a local run takes about 10 minutes longer.
 
 Simulator builds are signed ad hoc
 (`CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=`). That keeps
@@ -146,7 +166,13 @@ What stays on the phone:
 - **Settings:** in the App Group.
 - **History:** the last 20 dictations as text only, with no audio. It can be
   turned off or cleared in Settings.
-- **Recordings:** deleted after transcription.
+- **Fallback results:** text recorded in the app for the keyboard waits in
+  the App Group until one of these happens:
+  - the keyboard inserts it;
+  - you clear or turn off history;
+  - it expires (3 minutes) and FreeFlow next opens.
+- **Recordings:** deleted after transcription. After a failed upload the app
+  keeps the file so you can try again, until you close the recorder.
 
 Logs record only states, counts and durations. They never contain
 transcripts, audio, keys or URLs.

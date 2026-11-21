@@ -92,7 +92,11 @@ final class CaptureTests: XCTestCase {
         XCTAssertGreaterThan(harness.levels.max() ?? 0, 0.1)
     }
 
-    /// Real getUserMedia capture against WebKit's simulator mock microphone.
+    /// Real getUserMedia capture against WebKit's simulator mock microphone, which plays a 70 ms
+    /// 1500 Hz bip and a 70 ms 500 Hz bop 1 s apart, on a 2 s loop over a 150 Hz hum. WebKit
+    /// bends or repeats stretches of that audio before the page sees it (see MockRhythm), so
+    /// this records long enough that one such stretch still leaves a bip, a bop and a steady
+    /// rhythm. FreeFlow's own part is exact: every frame the page sent is in the file.
     @MainActor
     func testMicrophoneCaptureRecordsWebKitsMockDevice() async throws {
         let harness = try await CaptureHarness.make(synthetic: false)
@@ -120,9 +124,9 @@ final class CaptureTests: XCTestCase {
         ])
         XCTAssertFalse(info.isSynthetic)
 
-        // At least one bip and one bop fall in any 2.1 s stretch of the mock's loop.
+        // Four or more bursts fall in 4.2 s, two of each kind, so a gap that takes one leaves both.
         var sawActiveMicrophone = false
-        let recordUntil = Date().addingTimeInterval(2.6)
+        let recordUntil = Date().addingTimeInterval(Self.microphoneRecordingSeconds)
         while Date() < recordUntil {
             if harness.capture.webView.microphoneCaptureState == .active {
                 sawActiveMicrophone = true
@@ -131,26 +135,56 @@ final class CaptureTests: XCTestCase {
         }
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
+        let endStatus = try await harness.pageStatus()
         harness.record("microphone recording", [
             "frames": audio.frameCount,
             "appliedGainDB": Double(audio.appliedGainDB),
             "sawActiveMicrophone": sawActiveMicrophone,
+            "pageReported": audio.pageContinuity != nil,
         ])
+        harness.record("page status after stop", endStatus)
+
+        // The file holds every frame the page sent, and the page's own count of what WebKit lost.
+        // A page that stalls past the stop wait loses its last frames by design, so only a page
+        // that ended in time is held to this.
+        if let continuity = audio.pageContinuity {
+            XCTAssertEqual(audio.frameCount, endStatus["frames"] as? Int, "Every frame the page sent must be in the file")
+            XCTAssertEqual(continuity.callbacks, endStatus["callbacks"] as? Int)
+            XCTAssertEqual(continuity.skippedCallbacks, endStatus["skipped"] as? Int)
+            XCTAssertEqual(continuity.lateCallbacks, endStatus["late"] as? Int)
+        }
 
         let wav = try CaptureHarness.loadWAV(audio.fileURL)
         XCTAssertEqual(wav.sampleRate, 16_000)
         XCTAssertEqual(wav.channels, 1)
-        XCTAssertGreaterThan(audio.duration, 2)
+        XCTAssertGreaterThan(audio.duration, Self.microphoneRecordingSeconds - 0.4)
         let tones = ToneAnalysis.mockDeviceTones(in: wav.samples)
+        let bursts = ToneAnalysis.mockDeviceBursts(in: wav.samples)
+        let rhythm = ToneAnalysis.MockRhythm(bursts)
+        // One stretch of WebKit's latency adaptation (see MockRhythm) bends at most two spacings,
+        // and its period of about 5 s leaves room for only one in a recording this short.
+        let allowedGlitches = 2
+        let steady = rhythm.isSteady(allowingGlitches: allowedGlitches)
+        let burstList = bursts.map(\.summary).joined(separator: " ")
+        let pageCounts = audio.pageContinuity.map { "\($0.skippedCallbacks) skipped, \($0.lateCallbacks) late" } ?? "no report"
         harness.record("mock device tones", [
             "windows": tones.windows,
             "humWindows": tones.humWindows,
             "bipWindows": tones.bipWindows,
             "bopWindows": tones.bopWindows,
+            "bursts": burstList,
+            "offsetsMs": rhythm.offsetsMilliseconds,
+            "repeatedBursts": rhythm.repeats,
+            "glitches": rhythm.glitches,
+            "steady": steady,
         ])
         XCTAssertGreaterThan(Double(tones.humWindows), 0.8 * Double(tones.windows), "The mock's 150 Hz hum runs throughout")
-        XCTAssertGreaterThan(tones.bipWindows, 0, "Expected the mock's 1500 Hz bip")
-        XCTAssertGreaterThan(tones.bopWindows, 0, "Expected the mock's 500 Hz bop")
+        // A burst falls every second; a gap, or either end of the recording, can take one.
+        let expectedBursts = Int((audio.duration - 0.07).rounded(.down))
+        XCTAssertGreaterThanOrEqual(bursts.count, expectedBursts - 1, "Expected about \(expectedBursts) bursts, got \(burstList)")
+        XCTAssertTrue(bursts.contains { $0.kind == .bip }, "Expected the mock's 1500 Hz bip: \(burstList)")
+        XCTAssertTrue(bursts.contains { $0.kind == .bop }, "Expected the mock's 500 Hz bop: \(burstList)")
+        XCTAssertTrue(steady, "The bursts must keep the mock's 1 s rhythm, but for \(allowedGlitches) gap(s): \(burstList), offsets \(rhythm.offsetsMilliseconds) ms, page \(pageCounts)")
         XCTAssertEqual(audio.appliedGainDB, 0, "The mock is already loud; no gain should apply")
 
         if sawActiveMicrophone {
@@ -159,6 +193,8 @@ final class CaptureTests: XCTestCase {
             }
         }
     }
+
+    private static let microphoneRecordingSeconds: TimeInterval = 4.2
 
     /// Named to run first, while WebKit's processes are still cold. A keyboard idles between
     /// dictations, so an idle page must still answer and start the next capture.
@@ -309,12 +345,79 @@ final class CaptureTests: XCTestCase {
         let stoppedAt = Date()
         harness.capture.stop()
         let audio = try await harness.waitForRecording(timeout: 10)
+        let elapsed = Date().timeIntervalSince(stoppedAt)
 
-        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(stoppedAt), WebAudioCapture.stopTimeout - 0.05)
+        XCTAssertGreaterThanOrEqual(elapsed, WebAudioCapture.stopTimeout - 0.05)
+        XCTAssertLessThan(elapsed, KeyboardDictationMachine.stopBackstop - 1, "The capture must finish well before the keyboard gives up on it")
         XCTAssertGreaterThan(audio.duration, 0.4)
+        XCTAssertNil(audio.pageContinuity, "A page that never ended reported nothing")
+        try await harness.waitForPageSession(toEndWith: "cancelled")
+
+        // Each capture can set its own wait.
+        harness.capture.stopTimeoutInterval = 0.4
+        harness.start()
+        try await harness.waitForStart(timeout: 10)
+        let shortStopAt = Date()
+        harness.capture.stop()
+        _ = try await harness.waitForRecording(timeout: 10)
+        let shortElapsed = Date().timeIntervalSince(shortStopAt)
+        XCTAssertGreaterThanOrEqual(shortElapsed, 0.35)
+        XCTAssertLessThan(shortElapsed, WebAudioCapture.stopTimeout - 0.5)
         try await harness.waitForPageSession(toEndWith: "cancelled")
     }
 
+    /// A page that stalls at stop for longer than the old 1 s wait, but within `stopTimeout`,
+    /// still delivers the end of the recording: its final flush is kept, not cut off.
+    @MainActor
+    func testSlowFinalFlushWithinTheStopWaitIsKept() async throws {
+        let harness = try await CaptureHarness.make(synthetic: true)
+        defer { harness.tearDown() }
+        try await harness.attachAndWaitForReady()
+        harness.start()
+        try await harness.waitForStart(timeout: 10)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        // The stop command first blocks the page's script thread, as a stalled page would, then
+        // stops for real. The synthetic source then delivers the time that passed. The stall
+        // outlasts the old 1 s wait and leaves the rest of the stop wait for CI's own stalls.
+        let stall = 1.2
+        XCTAssertGreaterThanOrEqual(WebAudioCapture.stopTimeout, stall + 1.2, "The stall must fall well inside the stop wait")
+        try await harness.run("""
+            (() => {
+              const stop = ffCapture.stop;
+              ffCapture.stop = (sid) => { const end = Date.now() + \(Int(stall * 1000)); while (Date.now() < end) {} stop(sid); };
+            })()
+            """)
+
+        let stoppedAt = Date()
+        harness.capture.stop()
+        let audio = try await harness.waitForRecording(timeout: 10)
+        let elapsed = Date().timeIntervalSince(stoppedAt)
+        let status = try await harness.pageStatus()
+        harness.record("slow stop flush", [
+            "elapsedSeconds": elapsed,
+            "frames": audio.frameCount,
+            "pageFrames": status["frames"] ?? -1,
+            "pageReason": status["reason"] ?? "",
+        ])
+
+        XCTAssertGreaterThanOrEqual(elapsed, stall - 0.05, "The capture waited for the stalled page")
+        XCTAssertEqual(status["reason"] as? String, "stopped", "The page finished its own stop")
+        XCTAssertNotNil(audio.pageContinuity, "The page's ended message arrived within the stop wait")
+        XCTAssertEqual(audio.frameCount, status["frames"] as? Int, "Every frame the page sent, its final flush included, is kept")
+        XCTAssertGreaterThan(audio.duration, 0.8 + stall - 0.3, "The recording covers the stall")
+        XCTAssertEqual(harness.terminalEvents.count, 1)
+    }
+
+    /// Every capture starts with a stop wait that ends inside the keyboard's stop backstop.
+    @MainActor
+    func testStopWaitDefaultsInsideTheKeyboardsBackstop() {
+        XCTAssertEqual(WebAudioCapture.stopTimeout, CaptureTiming.stopTimeout)
+        XCTAssertEqual(WebAudioCapture().stopTimeoutInterval, WebAudioCapture.stopTimeout)
+        XCTAssertLessThan(WebAudioCapture.stopTimeout, KeyboardDictationMachine.stopBackstop)
+    }
+
+    /// WebKit's own handling of a terminated web content process: the session fails, its file is
+    /// deleted, the page reloads in a new process, and capture works again.
     @MainActor
     func testWebContentProcessTerminationFailsAndReloads() async throws {
         let harness = try await CaptureHarness.make(synthetic: true)
@@ -323,24 +426,43 @@ final class CaptureTests: XCTestCase {
         harness.start()
         try await harness.waitForStart(timeout: 10)
         let fileURL = try XCTUnwrap(harness.capture.recordingFileURL)
+        let page = harness.capture.webView
+        let killedProcess = CaptureHarness.webContentProcessIdentifier(of: page)
 
-        // Test-only WebKit SPI that really ends the web content process.
-        let kill = NSSelectorFromString("_killWebContentProcess")
-        let killedForReal = harness.capture.webView.responds(to: kill)
-        if killedForReal {
-            harness.capture.webView.perform(kill)
-        } else {
-            harness.capture.webContentProcessDidTerminate()
+        // Test-only WebKit SPI. It asks for the process to end, then runs WebKit's own handling
+        // of a terminated process, which calls webViewWebContentProcessDidTerminate, whether or
+        // not the system lets the kill through. The plain _killWebContentProcess waits for the
+        // process to die, and RunningBoard sometimes refuses to kill it for the simulator's test
+        // host ("Client not entitled"), which left the process running and nothing reported.
+        let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
+        guard page.responds(to: kill) else {
+            throw XCTSkip("This WebKit has no _killWebContentProcessAndResetState, so the test can't end the page's web content process")
         }
-        harness.record("web process termination", ["killedForReal": killedForReal])
-        let event = try await harness.waitForTerminalEvent(timeout: 10)
+        let killedAt = Date()
+        page.perform(kill)
+        let event = try await harness.waitForTerminalEvent(timeout: 5)
+        harness.record("web process termination", [
+            "notifiedAfterMs": Int(Date().timeIntervalSince(killedAt) * 1000),
+            "knewProcess": killedProcess != nil,
+        ])
 
         XCTAssertEqual(event, .failed(.pageUnavailable))
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
-        try await harness.waitUntil("the page to reload", timeout: 30) {
+        // A reload slower than pageLoadTimeout gets a fresh web view instead; that is a slow
+        // runner, not this path, so it gets its own message.
+        try await harness.waitUntil("the page to reload", timeout: WebAudioCapture.pageLoadTimeout + 5) {
             harness.events.filter { $0 == .ready }.count == 2
         }
         XCTAssertEqual(harness.capture.state, .ready)
+        XCTAssertTrue(harness.capture.webView === page, "The page must reload in its own web view; the page-load watchdog replaced it")
+        let reloadedProcess = CaptureHarness.webContentProcessIdentifier(of: harness.capture.webView)
+        harness.record("web process after reload", [
+            "newProcess": reloadedProcess != nil && reloadedProcess != killedProcess,
+            "oldProcess": killedProcess.map { CaptureHarness.processState($0) } ?? "unknown",
+        ])
+        if let killedProcess, let reloadedProcess {
+            XCTAssertNotEqual(reloadedProcess, killedProcess, "The page must reload in a new web content process")
+        }
 
         harness.start()
         try await harness.waitForStart(timeout: 10)
@@ -771,6 +893,21 @@ final class CaptureHarness: WebAudioCaptureDelegate {
         }
     }
 
+    /// The web view's WebContent process id, from test-only WebKit SPI; nil without one.
+    static func webContentProcessIdentifier(of webView: WKWebView) -> Int32? {
+        guard webView.responds(to: NSSelectorFromString("_webProcessIdentifier")),
+              let identifier = (webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value,
+              identifier > 0 else { return nil }
+        return identifier
+    }
+
+    /// Whether a process still exists, found by sending it no signal at all.
+    static func processState(_ identifier: Int32) -> String {
+        if kill(identifier, 0) == 0 { return "alive" }
+        let error = errno
+        return error == ESRCH ? "exited" : "unknown(\(error))"
+    }
+
     static func loadWAV(_ url: URL) throws -> (sampleRate: Int, channels: Int, samples: [Int16]) {
         let data = try Data(contentsOf: url)
         guard let wav = WAVEncoder.decode(data) else { throw CaptureTestError.badWAV }
@@ -823,16 +960,144 @@ enum ToneAnalysis {
         var start = 0
         while start + 320 <= samples.count {
             let window = samples[start..<start + 320]
-            let p150 = power(window, frequency: 150)
-            let p500 = power(window, frequency: 500)
-            let p1500 = power(window, frequency: 1_500)
             windows += 1
-            if p150 > 0.0005 { hum += 1 }
-            if p1500 > 0.01 && p1500 > 4 * p500 { bip += 1 }
-            if p500 > 0.01 && p500 > 4 * p1500 { bop += 1 }
+            if power(window, frequency: 150) > 0.0005 { hum += 1 }
+            switch mockDeviceBurstKind(in: window) {
+            case .bip?: bip += 1
+            case .bop?: bop += 1
+            case nil: break
+            }
             start += 160
         }
         return (windows, hum, bip, bop)
+    }
+
+    /// Which of the mock's bursts a 20 ms window holds, if either.
+    static func mockDeviceBurstKind(in window: ArraySlice<Int16>) -> MockBurst.Kind? {
+        let p500 = power(window, frequency: 500)
+        let p1500 = power(window, frequency: 1_500)
+        if p1500 > 0.01 && p1500 > 4 * p500 { return .bip }
+        if p500 > 0.01 && p500 > 4 * p1500 { return .bop }
+        return nil
+    }
+
+    /// One of the mock's bursts, found as a run of consecutive windows that hold it.
+    struct MockBurst: Equatable {
+        enum Kind {
+            case bip
+            case bop
+        }
+
+        let kind: Kind
+        /// The middle of the burst, in seconds from the start of the recording.
+        let time: Double
+        /// Windows in the run. A whole 70 ms burst fills 7 or 8.
+        let windows: Int
+
+        /// A whole burst, so its middle is timed to within about 5 ms.
+        var isWhole: Bool { windows >= 6 }
+
+        var summary: String {
+            "\(kind == .bip ? "bip" : "bop")@\(String(format: "%.3f", time))s/\(windows)"
+        }
+    }
+
+    /// The mock's bursts: runs of at least three consecutive windows holding the same one.
+    static func mockDeviceBursts(in samples: [Int16]) -> [MockBurst] {
+        var kinds: [MockBurst.Kind?] = []
+        var start = 0
+        while start + 320 <= samples.count {
+            kinds.append(mockDeviceBurstKind(in: samples[start..<start + 320]))
+            start += 160
+        }
+        var bursts: [MockBurst] = []
+        var first = 0
+        while first < kinds.count {
+            guard let kind = kinds[first] else {
+                first += 1
+                continue
+            }
+            var end = first + 1
+            while end < kinds.count && kinds[end] == kind {
+                end += 1
+            }
+            if end - first >= 3 {
+                // Window i spans samples 160 i ..< 160 i + 320, so the run's middle is halfway
+                // between the middles of its first and last windows.
+                let middle = Double(160 * first + 160 * (end - 1) + 320) / 2 / 16_000
+                bursts.append(MockBurst(kind: kind, time: middle, windows: end - first))
+            }
+            first = end
+        }
+        return bursts
+    }
+
+    /// How whole bursts keep the mock's rhythm. Successive bursts are a whole number of seconds
+    /// apart: 1 s from a bip to a bop, 2 s when the burst between them is missing or cut short.
+    ///
+    /// The simulator's mock makes audio 1.6% too fast (896 frames per 20 ms tick at 44.1 kHz), so
+    /// WebKit's media stream buffer grows. At 100 ms, WebKit plays it 5% fast until it is under
+    /// 40 ms ("AudioSampleDataConverter::updateBufferedAmount high buffer"): about 1.3 s that
+    /// lose about 70 ms, every 5 s or so. That bends the spacings in and out of the stretch, and
+    /// raises a bip inside it to 1579 Hz, past the 1500 Hz detector, so that bip goes missing.
+    ///
+    /// Late callbacks move nothing: when a stalled page catches up, WebKit hands its queued
+    /// callbacks its latest buffers again, which replaces the stalled stretch and can repeat a
+    /// burst 85 ms apart. The mock never puts two bursts that close, so those are left out of
+    /// the timing and counted as repeats.
+    struct MockRhythm {
+        /// Spacings this close to a whole number of seconds have no gap in them.
+        static let exactOffset = 0.02
+        /// A spacing off by more than this lost more audio than a brief stall in WebKit would.
+        static let maximumOffset = 0.3
+        /// Bursts closer than this to another are repeats: the mock's own are 1 s apart, and
+        /// repeats about 85 ms.
+        static let repeatSpacing = 0.2
+
+        /// How far each spacing between timed bursts is from its whole number of seconds.
+        let offsets: [Double]
+        /// Whether bip and bop alternate as those whole numbers of seconds say they should.
+        let alternates: Bool
+        /// Bursts left out of the timing because another one is within `repeatSpacing`.
+        let repeats: Int
+
+        init(_ bursts: [MockBurst]) {
+            let closeness = MockRhythm.repeatSpacing
+            let repeated = bursts.indices.map { index in
+                (index > 0 && bursts[index].time - bursts[index - 1].time < closeness)
+                    || (index + 1 < bursts.count && bursts[index + 1].time - bursts[index].time < closeness)
+            }
+            let timed = zip(bursts, repeated).filter { $0.0.isWhole && !$0.1 }.map { $0.0 }
+            var offsets: [Double] = []
+            var alternates = true
+            for (earlier, later) in zip(timed, timed.dropFirst()) {
+                let spacing = later.time - earlier.time
+                let seconds = max(1, spacing.rounded())
+                offsets.append(spacing - seconds)
+                if (Int(seconds) % 2 == 1) != (earlier.kind != later.kind) {
+                    alternates = false
+                }
+            }
+            self.offsets = offsets
+            self.alternates = alternates
+            repeats = repeated.filter { $0 }.count
+        }
+
+        /// Spacings off their whole number of seconds by more than `exactOffset`.
+        var glitches: Int {
+            offsets.filter { abs($0) > Self.exactOffset }.count
+        }
+
+        /// The bursts alternate on whole seconds, at most `allowedGlitches` spacings are off,
+        /// and none by more than a gap could explain.
+        func isSteady(allowingGlitches allowedGlitches: Int) -> Bool {
+            guard alternates, !offsets.isEmpty else { return false }
+            return glitches <= allowedGlitches && offsets.allSatisfy { abs($0) <= Self.maximumOffset }
+        }
+
+        var offsetsMilliseconds: String {
+            offsets.map { String(Int(($0 * 1_000).rounded())) }.joined(separator: " ")
+        }
     }
 }
 
