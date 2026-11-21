@@ -14,18 +14,19 @@ struct PCMChunk: Equatable {
     let isFinal: Bool
 }
 
-/// The page's own count, from its `ended` message, of audio WebKit lost before the page's
-/// callbacks could run. WebKit drops audio the page never sees, and it refills a callback's
-/// buffer while the callback is still waiting to run, which loses or repeats audio. FreeFlow
-/// writes everything the page sends, so it can't recover either; these say only that it
-/// happened. Counts only, never audio.
+/// The page's own count, from its `ended` message, of audio lost between WebKit's audio context
+/// and the page's callbacks. WebKit drops rendered audio the page never sees, and it refills a
+/// callback's buffer while the callback is still waiting to run, which loses or repeats audio.
+/// FreeFlow writes everything the page sends, so it can't recover either; these say only that it
+/// happened. Audio lost before the context renders it, in the capture or the media stream, isn't
+/// counted, so zeros don't prove the audio was whole. Counts only, never audio.
 struct CaptureContinuity: Equatable {
     /// Audio callbacks the page ran.
     var callbacks = 0
     /// Callbacks' worth of audio the audio context rendered that never reached the page.
     var skippedCallbacks = 0
-    /// Callbacks that ran a whole callback period behind a later one, late enough that WebKit
-    /// may already have refilled their buffer.
+    /// Callbacks that ran more than a whole callback period behind a later one, after WebKit
+    /// began refilling their buffer.
     var lateCallbacks = 0
 }
 

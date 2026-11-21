@@ -157,7 +157,8 @@ function ffSyntheticSource(onBlock) {
 // and finally {t:'ended'} or {t:'failed'}. Native acks every pcm message. The page releases
 // the microphone by itself when posted chunks go unacked for 2.5 s (native-unresponsive) or
 // when no audio callback arrives for 2.5 s (no-audio). The ended message also counts the
-// callbacks the page ran, and the audio WebKit lost before they could run (see track()).
+// callbacks the page ran, and those that lost audio between the audio context and the page
+// (see track()).
 (() => {
   const SP_FRAMES = 2048;              // about 42.7 ms per ScriptProcessor callback at 48 kHz
   const METER_SECONDS = 1024 / 48000;  // about 21.3 ms RMS blocks for the waveform
@@ -213,12 +214,15 @@ function ffSyntheticSource(onBlock) {
     }
     return levels;
   }
-  // How continuous the audio was, as far as the page can tell. The context's clock counts every
-  // frame it renders, so its lead over the audio this page received (the lag, in frames) moves
-  // with scheduling jitter, and grows for good when WebKit drops audio before a callback runs.
-  // WebKit also never waits for a callback: one that runs a whole period behind a later one ran
-  // after WebKit could refill its buffer, so its audio may be lost or repeated. Counts, and
-  // positions in the 16 kHz audio sent, only. The synthetic source has no context to compare.
+  // How continuous the audio was between the audio context and the page. The context's clock
+  // counts every frame it renders, so its lead over the audio this page received (the lag, in
+  // frames) moves with scheduling jitter, and grows for good when WebKit drops audio before a
+  // callback runs. WebKit also never waits for a callback: one that runs more than a whole
+  // period behind a later one ran after WebKit began refilling its buffer, so part of its audio
+  // was lost or repeated. Callbacks queued behind a stall run back to back and measure the
+  // queue, so only those that ran at least half a period after the one before judge the lead.
+  // Audio lost before the context renders it doesn't show here. Counts, and positions in the
+  // 16 kHz audio sent, only. The synthetic source has no context to compare.
   function track(s, frames) {
     const now = performance.now();
     if (s.callbacks > 1) {
@@ -234,15 +238,18 @@ function ffSyntheticSource(onBlock) {
     s.lagBase = Math.min(s.lagBase, lag);
     s.stallMs = Math.max(s.stallMs, now - s.wall0 - (time - s.time0) * 1000);
     s.pending = s.pending.filter((p) => {
-      if (p.lag - lag < SP_FRAMES) return true;
+      if (p.lag - lag <= SP_FRAMES + 0.5) return true;
       s.late++;
       note(s, 'late', (p.lag - lag) * 1000 / s.rate, p.at);
       return false;
     });
     s.pending.push({ lag, at: s.frames });
     if (s.pending.length > LATE_WINDOW) s.pending.shift();
-    s.settled.push(lag);
-    if (s.settled.length > SETTLED_CALLBACKS) s.settled.shift();
+    if (s.callbacks === 1 || (time - s.lastTime) * s.rate >= SP_FRAMES / 2) {
+      s.settled.push(lag);
+      if (s.settled.length > SETTLED_CALLBACKS) s.settled.shift();
+    }
+    s.lastTime = time;
   }
   // Callbacks' worth of audio the context rendered that never reached the page.
   function skippedCallbacks(s) {
@@ -290,7 +297,7 @@ function ffSyntheticSource(onBlock) {
       sid: Number(o.sid) || 0, synthetic: !!o.synthetic, phase: 'starting', endedIn: '', reason: '',
       seq: 0, acked: 0, frames: 0, callbacks: 0, sumSq: 0, count: 0, stopping: false,
       rate: 0, captureRate: 0, lastAck: performance.now(),
-      received: 0, lagBase: 0, time0: 0, wall0: 0, pending: [], settled: [], late: 0,
+      received: 0, lagBase: 0, time0: 0, wall0: 0, lastTime: 0, pending: [], settled: [], late: 0,
       maxGapMs: 0, stallMs: 0, notes: [],
     };
     S = s; last = s;

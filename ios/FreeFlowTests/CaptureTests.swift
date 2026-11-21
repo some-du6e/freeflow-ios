@@ -94,9 +94,9 @@ final class CaptureTests: XCTestCase {
 
     /// Real getUserMedia capture against WebKit's simulator mock microphone, which plays a 70 ms
     /// 1500 Hz bip and a 70 ms 500 Hz bop 1 s apart, on a 2 s loop over a 150 Hz hum. On a busy
-    /// runner WebKit sometimes loses a stretch of that audio before the page sees it, so this
-    /// records long enough that one such gap still leaves a bip, a bop and a steady rhythm.
-    /// FreeFlow's own part is exact: every frame the page sent is in the file.
+    /// runner WebKit sometimes loses or repeats a stretch of that audio before the page sees it,
+    /// so this records long enough that one such gap still leaves a bip, a bop and a steady
+    /// rhythm. FreeFlow's own part is exact: every frame the page sent is in the file.
     @MainActor
     func testMicrophoneCaptureRecordsWebKitsMockDevice() async throws {
         let harness = try await CaptureHarness.make(synthetic: false)
@@ -161,7 +161,11 @@ final class CaptureTests: XCTestCase {
         let tones = ToneAnalysis.mockDeviceTones(in: wav.samples)
         let bursts = ToneAnalysis.mockDeviceBursts(in: wav.samples)
         let rhythm = ToneAnalysis.MockRhythm(bursts)
+        // WebKit's gaps so far all fell where the mock's 2 s loop wraps, so allow one per wrap.
+        let allowedGlitches = max(1, Int(audio.duration / 2))
+        let steady = rhythm.isSteady(allowingGlitches: allowedGlitches)
         let burstList = bursts.map(\.summary).joined(separator: " ")
+        let pageCounts = audio.pageContinuity.map { "\($0.skippedCallbacks) skipped, \($0.lateCallbacks) late" } ?? "no report"
         harness.record("mock device tones", [
             "windows": tones.windows,
             "humWindows": tones.humWindows,
@@ -169,7 +173,9 @@ final class CaptureTests: XCTestCase {
             "bopWindows": tones.bopWindows,
             "bursts": burstList,
             "offsetsMs": rhythm.offsetsMilliseconds,
-            "steady": rhythm.isSteady,
+            "repeatedBursts": rhythm.repeats,
+            "glitches": rhythm.glitches,
+            "steady": steady,
         ])
         XCTAssertGreaterThan(Double(tones.humWindows), 0.8 * Double(tones.windows), "The mock's 150 Hz hum runs throughout")
         // A burst falls every second; a gap, or either end of the recording, can take one.
@@ -177,7 +183,7 @@ final class CaptureTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(bursts.count, expectedBursts - 1, "Expected about \(expectedBursts) bursts, got \(burstList)")
         XCTAssertTrue(bursts.contains { $0.kind == .bip }, "Expected the mock's 1500 Hz bip: \(burstList)")
         XCTAssertTrue(bursts.contains { $0.kind == .bop }, "Expected the mock's 500 Hz bop: \(burstList)")
-        XCTAssertTrue(rhythm.isSteady, "The bursts must keep the mock's 1 s rhythm, but for a gap: \(burstList), offsets \(rhythm.offsetsMilliseconds) ms")
+        XCTAssertTrue(steady, "The bursts must keep the mock's 1 s rhythm, but for \(allowedGlitches) gap(s): \(burstList), offsets \(rhythm.offsetsMilliseconds) ms, page \(pageCounts)")
         XCTAssertEqual(audio.appliedGainDB, 0, "The mock is already loud; no gain should apply")
 
         if sawActiveMicrophone {
@@ -370,9 +376,10 @@ final class CaptureTests: XCTestCase {
         try await harness.waitForStart(timeout: 10)
         try await Task.sleep(nanoseconds: 800_000_000)
         // The stop command first blocks the page's script thread, as a stalled page would, then
-        // stops for real. The synthetic source then delivers the time that passed.
-        let stall = 1.5
-        XCTAssertGreaterThanOrEqual(WebAudioCapture.stopTimeout, stall + 1, "The stall must fall well inside the stop wait")
+        // stops for real. The synthetic source then delivers the time that passed. The stall
+        // outlasts the old 1 s wait and leaves the rest of the stop wait for CI's own stalls.
+        let stall = 1.2
+        XCTAssertGreaterThanOrEqual(WebAudioCapture.stopTimeout, stall + 1.2, "The stall must fall well inside the stop wait")
         try await harness.run("""
             (() => {
               const stop = ffCapture.stop;
@@ -440,12 +447,14 @@ final class CaptureTests: XCTestCase {
 
         XCTAssertEqual(event, .failed(.pageUnavailable))
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
-        try await harness.waitUntil("the page to reload", timeout: 30) {
+        // A reload slower than pageLoadTimeout gets a fresh web view instead; that is a slow
+        // runner, not this path, so it gets its own message.
+        try await harness.waitUntil("the page to reload", timeout: WebAudioCapture.pageLoadTimeout + 5) {
             harness.events.filter { $0 == .ready }.count == 2
         }
         XCTAssertEqual(harness.capture.state, .ready)
-        XCTAssertTrue(harness.capture.webView === page, "The page reloads in the same web view")
-        let reloadedProcess = CaptureHarness.webContentProcessIdentifier(of: page)
+        XCTAssertTrue(harness.capture.webView === page, "The page must reload in its own web view; the page-load watchdog replaced it")
+        let reloadedProcess = CaptureHarness.webContentProcessIdentifier(of: harness.capture.webView)
         harness.record("web process after reload", [
             "newProcess": reloadedProcess != nil && reloadedProcess != killedProcess,
             "oldProcess": killedProcess.map { CaptureHarness.processState($0) } ?? "unknown",
@@ -1024,23 +1033,37 @@ enum ToneAnalysis {
 
     /// How whole bursts keep the mock's rhythm. Successive bursts are a whole number of seconds
     /// apart: 1 s from a bip to a bop, 2 s when the burst between them is missing or cut short.
-    /// Audio that WebKit drops or repeats moves the bursts after it, by as much as it lasted.
+    /// Audio WebKit drops or zero-fills before the page moves every burst after it by as long as
+    /// it lasted; CI's losses so far were about 70 ms each, at a bip, where the mock's 2 s loop
+    /// wraps. Late callbacks move nothing: when a stalled page catches up, WebKit hands its
+    /// queued callbacks its latest buffers again, which replaces the stalled stretch and can
+    /// repeat a burst tens of milliseconds apart. The mock never puts two bursts that close, so
+    /// those are left out of the timing and counted as repeats.
     struct MockRhythm {
         /// Spacings this close to a whole number of seconds have no gap in them.
         static let exactOffset = 0.02
         /// A spacing off by more than this lost more audio than a brief stall in WebKit would.
         static let maximumOffset = 0.3
+        /// Bursts closer than this to another are repeats: the mock's own are 1 s apart.
+        static let repeatSpacing = 0.5
 
-        /// How far each spacing between whole bursts is from its whole number of seconds.
+        /// How far each spacing between timed bursts is from its whole number of seconds.
         let offsets: [Double]
         /// Whether bip and bop alternate as those whole numbers of seconds say they should.
         let alternates: Bool
+        /// Bursts left out of the timing because another one is within `repeatSpacing`.
+        let repeats: Int
 
         init(_ bursts: [MockBurst]) {
-            let whole = bursts.filter(\.isWhole)
+            let closeness = MockRhythm.repeatSpacing
+            let repeated = bursts.indices.map { index in
+                (index > 0 && bursts[index].time - bursts[index - 1].time < closeness)
+                    || (index + 1 < bursts.count && bursts[index + 1].time - bursts[index].time < closeness)
+            }
+            let timed = zip(bursts, repeated).filter { $0.0.isWhole && !$0.1 }.map { $0.0 }
             var offsets: [Double] = []
             var alternates = true
-            for (earlier, later) in zip(whole, whole.dropFirst()) {
+            for (earlier, later) in zip(timed, timed.dropFirst()) {
                 let spacing = later.time - earlier.time
                 let seconds = max(1, spacing.rounded())
                 offsets.append(spacing - seconds)
@@ -1050,14 +1073,19 @@ enum ToneAnalysis {
             }
             self.offsets = offsets
             self.alternates = alternates
+            repeats = repeated.filter { $0 }.count
         }
 
-        /// Most spacings are exact, so the 1 s rhythm holds, and any that aren't are off by no
-        /// more than a gap could explain.
-        var isSteady: Bool {
+        /// Spacings off their whole number of seconds by more than `exactOffset`.
+        var glitches: Int {
+            offsets.filter { abs($0) > Self.exactOffset }.count
+        }
+
+        /// The bursts alternate on whole seconds, at most `allowedGlitches` spacings are off,
+        /// and none by more than a gap could explain.
+        func isSteady(allowingGlitches allowedGlitches: Int) -> Bool {
             guard alternates, !offsets.isEmpty else { return false }
-            let exact = offsets.filter { abs($0) <= Self.exactOffset }.count
-            return 2 * exact >= offsets.count && offsets.allSatisfy { abs($0) <= Self.maximumOffset }
+            return glitches <= allowedGlitches && offsets.allSatisfy { abs($0) <= Self.maximumOffset }
         }
 
         var offsetsMilliseconds: String {

@@ -9,8 +9,9 @@ struct CapturedAudio: Equatable {
     let sampleRate: Int
     /// Gain applied at stop, in dB (0 when the audio was left unchanged).
     let appliedGainDB: Float
-    /// The page's count of audio WebKit lost before the page saw it, from its `ended` message.
-    /// Nil when the capture finished without one: the stop wait ran out, or the page went away.
+    /// The page's count of audio lost between WebKit's audio context and the page, from its
+    /// `ended` message. Nil when the capture finished without one: the stop wait ran out, or the
+    /// page went away.
     var pageContinuity: CaptureContinuity? = nil
 
     var duration: TimeInterval {
@@ -649,10 +650,11 @@ final class WebAudioCapture: NSObject {
             delegate?.webAudioCapture(self, didFail: .noAudio)
             return
         }
+        // The page's counts come early in the line: CI keeps only the first 220 characters.
         let page = session.pageContinuity.map {
             "\($0.callbacks) callbacks, \($0.skippedCallbacks) skipped, \($0.lateCallbacks) late"
         } ?? "no report"
-        Self.log.info("Capture session \(session.id, privacy: .public) finished: \(finished.frameCount, privacy: .public) frames, gain \(finished.gain.gainDB, privacy: .public) dB, \(finished.skippedChunks, privacy: .public) chunks missing; page: \(page, privacy: .public)")
+        Self.log.info("Capture session \(session.id, privacy: .public) finished: \(finished.frameCount, privacy: .public) frames (page: \(page, privacy: .public)), gain \(finished.gain.gainDB, privacy: .public) dB, \(finished.skippedChunks, privacy: .public) chunks missing")
         #if DEBUG
         let loudness = finished.loudness
         Self.log.debug("Capture loudness: peak \(loudness.peakDBFS, privacy: .public), speech \(loudness.speechDBFS, privacy: .public), floor \(loudness.noiseFloorDBFS, privacy: .public) dBFS")

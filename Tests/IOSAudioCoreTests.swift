@@ -1058,8 +1058,29 @@ enum IOSAudioCoreTests {
         let steadyFrames = steady.native.chunks.reduce(0) { $0 + $1.frameCount }
         TestSupport.expectEqual(steady.native.messages.last, .ended(session: 2, reason: "cancelled", frames: steadyFrames, continuity: CaptureContinuity(callbacks: 50)))
         TestSupport.expectEqual(steady.string("ffCapture.status().notes"), "")
+
+        // A session that ends inside the backlog of a long stall: the queued callbacks run back
+        // to back at one context time, and stop() arrives behind some of them. Their lag measures
+        // the queue, not lost audio, so nothing counts as skipped; all but the last two ran late.
+        let backlogged = JSCapturePage()
+        backlogged.evaluate("ffCapture.start({sid: 3}); 0")
+        backlogged.evaluate("""
+            for (let i = 0; i < 30; i++) __deliver((i + 1) * 2048 + [0, 300, 900][i % 3]);
+            // A 1.7 s stall, after which the context moves on only 64 frames per queued callback.
+            var stalledUntil = 30 * 2048 + 81600;
+            for (let i = 30; i < 45; i++) __deliver(stalledUntil + 64 * (i - 30));
+            ffCapture.stop(3);
+            __deliver(stalledUntil + 64 * 15);
+            0
+            """)
+        let backloggedFrames = backlogged.native.chunks.reduce(0) { $0 + $1.frameCount }
+        TestSupport.expectEqual(
+            backlogged.native.messages.last,
+            .ended(session: 3, reason: "stopped", frames: backloggedFrames, continuity: CaptureContinuity(callbacks: 46, skippedCallbacks: 0, lateCallbacks: 14))
+        )
         page.expectNoExceptions()
         steady.expectNoExceptions()
+        backlogged.expectNoExceptions()
     }
 
     private static func testJavaScriptFailures() {
