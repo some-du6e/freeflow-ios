@@ -142,6 +142,13 @@ jobs:
         timeout-minutes: 15
         run: |
           mkdir -p "$DIAGNOSTICS_PATH"
+          # The keyboard's own log, streamed live because the simulator
+          # doesn't keep info-level lines for later. It holds state names,
+          # capture events, counts and rates, never text or audio.
+          xcrun simctl spawn "$SIMULATOR_UDID" log stream --level info --style compact \
+            --predicate "subsystem == \"$FREEFLOW_KEYBOARD_ID\"" \
+            < /dev/null > "$DIAGNOSTICS_PATH/keyboard.log" 2>&1 &
+          echo "KEYBOARD_LOG_PID=$!" >> "$GITHUB_ENV"
           xcodebuild test-without-building \
             -project ios/FreeFlow.xcodeproj \
             -scheme FreeFlow \
@@ -159,6 +166,13 @@ jobs:
       - name: Report the UI tests' findings
         if: always()
         run: |
+          if [ -n "${KEYBOARD_LOG_PID:-}" ]; then
+            kill "$KEYBOARD_LOG_PID" 2>/dev/null || true
+            echo "::group::The keyboard's capture sessions and state changes"
+            grep -E 'Capture session [0-9]+ (starting|audio graph started|finished)|\] status ' \
+              "$DIAGNOSTICS_PATH/keyboard.log" | cut -c1-220 || echo "(none logged)"
+            echo "::endgroup::"
+          fi
           log="$DIAGNOSTICS_PATH/xcodebuild-test.log"
           if [ ! -f "$log" ]; then
             echo "No test log at $log"
@@ -366,7 +380,8 @@ jobs:
 
       - name: Start the mock provider
         run: |
-          nohup python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 \
+          # The latency keeps every recorder's processing state on screen.
+          nohup python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 --latency 2 \
             < /dev/null > "$RUNNER_TEMP/mock-provider.log" 2>&1 &
           for attempt in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8765/healthz && exit 0
