@@ -35,10 +35,11 @@ final class KeyboardViewController: UIInputViewController {
     private var panelHeightConstraint: NSLayoutConstraint?
     private var didScheduleHeightConstraint = false
 
-    /// Whether a capture started since `viewDidAppear` attached it. The first
-    /// start gets `KeyboardDictationMachine.firstStartCaptureTimeout`, because
-    /// it can wait on WebKit's GPU process launching cold.
-    private var hasStartedSinceAttach = false
+    /// Whether a capture produced audio since the capture page was attached.
+    /// Until one has, starts get `KeyboardDictationMachine.firstStartCaptureTimeout`,
+    /// because they can wait on WebKit's GPU process launching cold. A start
+    /// that fails before any audio doesn't use up that allowance.
+    private var hasCapturedSinceAttach = false
 
     private var wakeTask: Task<Void, Never>?
     private var pipelineTask: Task<Void, Never>?
@@ -104,7 +105,7 @@ final class KeyboardViewController: UIInputViewController {
         let capture = self.capture
         capture.delegate = self
         capture.attach(to: rootInputView)
-        hasStartedSinceAttach = false
+        hasCapturedSinceAttach = false
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -115,6 +116,7 @@ final class KeyboardViewController: UIInputViewController {
             capture.detach()
             capture.delegate = nil
         }
+        hasCapturedSinceAttach = false
         wakeTask?.cancel()
         wakeTask = nil
         // Controllers can outlive their host, so drop the views now.
@@ -335,12 +337,14 @@ final class KeyboardViewController: UIInputViewController {
             let capture = self.capture
             capture.delegate = self
             if let rootInputView {
+                if capture.state == .detached {
+                    hasCapturedSinceAttach = false
+                }
                 capture.attach(to: rootInputView)
             }
-            capture.startTimeoutInterval = hasStartedSinceAttach
+            capture.startTimeoutInterval = hasCapturedSinceAttach
                 ? WebAudioCapture.startTimeout
                 : KeyboardDictationMachine.firstStartCaptureTimeout
-            hasStartedSinceAttach = true
             capture.start()
         case .stopCapture:
             capture.stop()
@@ -577,6 +581,7 @@ extension KeyboardViewController: WebAudioCaptureDelegate {
     func webAudioCaptureDidBecomeReady(_ capture: WebAudioCapture) {}
 
     func webAudioCaptureDidStart(_ capture: WebAudioCapture) {
+        hasCapturedSinceAttach = true
         send(.captureStarted)
     }
 

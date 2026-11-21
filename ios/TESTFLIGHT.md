@@ -257,8 +257,9 @@ and undoing that means removing and re-inviting yourself.
 
 2. The Archive job runs first, in a few minutes, plus any wait for a free
    macOS runner. Then the run page shows a review request. Click Review
-   deployments, select `testflight`, and click Approve and deploy. A run
-   that nobody approves fails after 30 days.
+   deployments, select `testflight`, and click Approve and deploy. Approve
+   within a day. The archive the signing job needs is kept for one day, so a
+   later approval fails at "Download the archive" and needs a new run.
 3. The signing job then signs, checks and uploads the build.
 4. App Store Connect then processes the build. Apple emails you when
    processing starts and when it completes or fails. Apple gives no typical
@@ -280,8 +281,11 @@ TestFlight builds expire 90 days after upload.
 
 Each upload of a version needs a higher build number than the last one. The
 workflow uses its run number plus `FREEFLOW_BUILD_NUMBER_OFFSET`, which
-defaults to 0. A re-run of the same run gets `<number>.<attempt>`, such as
-`7.2`, which sorts between 7 and 8.
+defaults to 0. Re-running all jobs of a run gets `<number>.<attempt>`, such as
+`7.2`, which sorts between 7 and 8. "Re-run failed jobs" reuses the Archive
+job's number and archive, so after an upload that may have reached Apple, use
+"Re-run all jobs" or start a new run. `FREEFLOW_BUILD_NUMBER_OFFSET` only
+takes effect in a new Archive job.
 
 If App Store Connect says the build number must be higher, for example after
 an upload from Xcode used a bigger number, set `FREEFLOW_BUILD_NUMBER_OFFSET`
@@ -400,9 +404,11 @@ bundle ID differs from `FREEFLOW_BUNDLE_ID_PREFIX`.
 Set `FREEFLOW_BUILD_NUMBER_OFFSET` to the number in the message and run
 again.
 
-A build uploaded from Xcode says Missing Compliance. CI builds can't, because
-the archive check requires `ITSAppUsesNonExemptEncryption`. Answer the
-export compliance question on the build page.
+A build says Missing Compliance. Its Info.plist lacks
+`ITSAppUsesNonExemptEncryption`. `ios/FreeFlow/Info.plist` declares it, and
+the CI archive check fails without it, so this means the key was dropped,
+for example in a local Xcode build. Restore the key, or answer the export
+compliance question on the build page.
 
 The build processed but never reached your group. Add it with the group's
 Add Builds button, and check that automatic distribution is on.
@@ -426,7 +432,10 @@ is down. You can't attach a debugger to a TestFlight build.
    with your Apple Account, Xcode registers the `.debug` App IDs and App
    Group itself, and both keyboards are called FreeFlow in the keyboard list.
    Leave `FREEFLOW_KEYCHAIN_GROUP_PREFIX` unset, since Xcode fills it in from
-   your profile.
+   your profile. Both builds claim the `freeflow://` URL scheme, and iOS
+   picks one of them. With both installed, the keyboard's Open FreeFlow
+   fallback can open the wrong app. To test the fallback, delete the other
+   build first, or use the `dev.karim.freeflow` prefix to replace it.
 4. Open `ios/FreeFlow.xcodeproj`, choose the FreeFlow scheme and your iPhone,
    and click Run. The first time, the iPhone asks you to turn on Developer
    Mode in Settings, then Privacy & Security, and restarts.
@@ -463,6 +472,9 @@ Xcode used.
   run you approved and the commit the run page shows. Changes elsewhere,
   including the Xcode project, run in the archive job, which can't read the
   key.
+- Approving also signs every app change on that branch and ships it to your
+  iPhone, where the app can read your provider API key and your dictations.
+  Review the app's diff too, or approve only runs from a reviewed `main`.
 - Approval is only as strong as your GitHub login. Anything that uses it,
   including AI agents on your machines, can start a run and approve it
   through the API, with no click from you. Allowing only branches that agents

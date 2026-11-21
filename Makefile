@@ -175,7 +175,7 @@ ios-test:
 # (.github/workflows/ios.yml); these run the same steps by hand.
 .PHONY: ios-mock-provider ios-mock-provider-selftest ios-simulator-prepare
 ios-mock-provider:
-	python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765
+	python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 --latency 2
 
 ios-mock-provider-selftest:
 	python3 .github/scripts/mock-openai-server.py --self-test
