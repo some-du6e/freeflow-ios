@@ -21,6 +21,7 @@ enum IOSAudioCoreTests {
         testGainPolicyDecisions()
         testGainPolicyOnSyntheticSpeechAndNoise()
         testGainPolicyIgnoresLeadingDigitalSilence()
+        testGainPolicyIgnoresUnderrunFill()
         testWAVHeaderGoldenBytes()
         testWAVParsingAndDecoding()
         testStreamingWriterMatchesOneShotEncoding()
@@ -34,6 +35,7 @@ enum IOSAudioCoreTests {
         testJavaScriptInt16AndBase64MatchSwift()
         testJavaScriptResamplerResponse()
         testJavaScriptCaptureSessionEndToEnd()
+        testJavaScriptZeroFillLeavesNoiseAlone()
         testJavaScriptDeadManSwitch()
         testJavaScriptInputStallReleasesTheMicrophone()
         testJavaScriptStopTimeoutCancelAndStaleSessions()
@@ -312,25 +314,32 @@ enum IOSAudioCoreTests {
     }
 
     private static func testLoudnessAnalyzerIgnoresDigitalSilence() {
-        // Whole blocks of digital silence, before or inside the speech, change only the frame count.
-        let speech = speechAndNoise(seconds: 1)
-        var plain = LoudnessAnalyzer()
-        plain.ingest(speech)
-        let expected = plain.summary()
-        var padded = LoudnessAnalyzer()
-        padded.ingest([Int16](repeating: 0, count: 3_200))
-        padded.ingest(speech[..<8_000])
-        padded.ingest([Int16](repeating: 0, count: 6_400))
-        padded.ingest(speech[8_000...])
-        TestSupport.expectEqual(
-            padded.summary(),
-            LoudnessSummary(
-                frames: speech.count + 9_600,
-                peakDBFS: expected.peakDBFS,
-                speechDBFS: expected.speechDBFS,
-                noiseFloorDBFS: expected.noiseFloorDBFS
-            )
-        )
+        // Zeros before the signal, and runs of 32 or more inside it, change only the frame
+        // count, wherever they start or end relative to the 320-frame blocks.
+        func summary(_ samples: [Int16], lead: Int, gap: Int, at split: Int) -> LoudnessSummary {
+            var analyzer = LoudnessAnalyzer()
+            analyzer.ingest([Int16](repeating: 0, count: lead))
+            analyzer.ingest(samples[..<split])
+            analyzer.ingest([Int16](repeating: 0, count: gap))
+            analyzer.ingest(samples[split...])
+            return analyzer.summary()
+        }
+        // A second of speech hides one partly-zero block in its percentiles. 2,048 frames of hiss
+        // can't, and there the blocks at the edges of a fill used to set the floor.
+        for samples in [speechAndNoise(seconds: 1), noise(rmsDBFS: -50, frames: 2_048, seed: 3)] {
+            let expected = summary(samples, lead: 0, gap: 0, at: 0)
+            for (lead, gap) in [(3_200, 6_400), (3_519, 683), (1, 32), (4_778, 4_096), (0, 300)] {
+                TestSupport.expectEqual(
+                    summary(samples, lead: lead, gap: gap, at: samples.count / 2),
+                    LoudnessSummary(
+                        frames: samples.count + lead + gap,
+                        peakDBFS: expected.peakDBFS,
+                        speechDBFS: expected.speechDBFS,
+                        noiseFloorDBFS: expected.noiseFloorDBFS
+                    )
+                )
+            }
+        }
 
         // Silence alone leaves nothing to measure, which the gain policy reads as no speech.
         var silent = LoudnessAnalyzer()
@@ -350,10 +359,22 @@ enum IOSAudioCoreTests {
         TestSupport.expectApproximatelyEqual(Double(tailSummary.speechDBFS), -23.01, accuracy: 0.5)
         TestSupport.expectEqual(tailSummary.speechDBFS, tailSummary.noiseFloorDBFS)
 
-        // Only exact zeros are skipped: one LSB of signal is a real, if very low, floor.
+        // A quiet signal's own zeros are samples. One LSB every 32 frames is a real, if very
+        // low, floor: ten 1s in 320 frames.
         var faint = LoudnessAnalyzer()
-        faint.ingest([Int16(1)] + [Int16](repeating: 0, count: 319))
-        TestSupport.expectEqual(faint.summary().noiseFloorDBFS, -115.25)
+        for _ in 0..<10 {
+            faint.ingest([Int16(1)] + [Int16](repeating: 0, count: 31))
+        }
+        TestSupport.expectEqual(faint.summary().noiseFloorDBFS, -105.25)
+        // From 32 zeros in a row a run is fill, so only the ten 1s are left to measure.
+        var gappy = LoudnessAnalyzer()
+        for _ in 0..<10 {
+            gappy.ingest([Int16(1)] + [Int16](repeating: 0, count: 32))
+        }
+        let gappySummary = gappy.summary()
+        TestSupport.expectEqual(gappySummary.frames, 330)
+        TestSupport.expectEqual(gappySummary.speechDBFS, -90.25)
+        TestSupport.expectEqual(gappySummary.noiseFloorDBFS, -90.25)
     }
 
     private static func testGainPolicyDecisions() {
@@ -406,6 +427,8 @@ enum IOSAudioCoreTests {
     /// WebKit zero-fills the stream until the microphone's first input arrives. Counted, 200 ms
     /// of that fill set the p10 floor to -119.75 dBFS: noise-only clips got past the no-speech
     /// guard (+24 dB on -50 dBFS hiss), and the -50 dBFS floor cap stopped limiting the gain.
+    /// The fill rarely ends on a block boundary, and on a clip of ten blocks or fewer the one
+    /// partly-zero block where it ended still set the floor.
     private static func testGainPolicyIgnoresLeadingDigitalSilence() {
         func decision(_ parts: [Int16]...) -> UploadGainPolicy.Decision {
             var analyzer = LoudnessAnalyzer()
@@ -414,20 +437,53 @@ enum IOSAudioCoreTests {
             }
             return UploadGainPolicy.decide(analyzer.summary())
         }
-        let lead = [Int16](repeating: 0, count: 3_200)
+        func zeros(_ count: Int) -> [Int16] {
+            [Int16](repeating: 0, count: count)
+        }
 
         let roomNoise = noise(rmsDBFS: -50, frames: 16_000, seed: 3)
         TestSupport.expectEqual(decision(roomNoise), .unchanged(.noSpeech))
-        TestSupport.expectEqual(decision(lead, roomNoise), .unchanged(.noSpeech))
+        TestSupport.expectEqual(decision(zeros(3_200), roomNoise), .unchanged(.noSpeech))
+
+        // Three page callbacks of hiss after the fill, with the fill ending at every offset in a
+        // block. A partly-zero block used to unlock up to +24 dB on 97 of these 320 leads.
+        let briefNoise = noise(rmsDBFS: -50, frames: 2_048, seed: 3)
+        TestSupport.expectEqual(decision(briefNoise), .unchanged(.noSpeech))
+        let boostedLeads = (3_200..<3_520).filter { decision(zeros($0), briefNoise) != .unchanged(.noSpeech) }
+        TestSupport.expectEqual(boostedLeads, [])
+        // The reviewed cases: they used to get +7.25, +12.25 and +24 dB.
+        TestSupport.expectEqual(decision(zeros(4_096), briefNoise), .unchanged(.noSpeech))
+        TestSupport.expectEqual(decision(zeros(4_778), briefNoise), .unchanged(.noSpeech))
+        TestSupport.expectEqual(decision(zeros(3_519), noise(rmsDBFS: -50, frames: 2_400, seed: 3)), .unchanged(.noSpeech))
 
         // Speech keeps the gain it gets without the lead. Here the -20 dBFS speech target limits it.
         let speech = speechAndNoise(seconds: 1)
-        TestSupport.expectEqual(decision(lead, speech), decision(speech))
-        TestSupport.expectApproximatelyEqual(Double(decision(lead, speech).gainDB), 21.75, accuracy: 0.5)
         // Over a -55 dBFS floor the floor cap limits it to about +5 dB (the lead used to allow +19.75).
         let overLouderFloor = speechAndNoise(seconds: 1, speechDBFS: -40, floorDBFS: -55)
-        TestSupport.expectEqual(decision(lead, overLouderFloor), decision(overLouderFloor))
-        TestSupport.expectApproximatelyEqual(Double(decision(lead, overLouderFloor).gainDB), 5.25, accuracy: 0.5)
+        for lead in [3_200, 3_519, 4_778] {
+            TestSupport.expectEqual(decision(zeros(lead), speech), decision(speech))
+            TestSupport.expectEqual(decision(zeros(lead), overLouderFloor), decision(overLouderFloor))
+        }
+        TestSupport.expectApproximatelyEqual(Double(decision(speech).gainDB), 21.75, accuracy: 0.5)
+        TestSupport.expectApproximatelyEqual(Double(decision(overLouderFloor).gainDB), 5.25, accuracy: 0.5)
+    }
+
+    /// After an underrun WebKit zero-fills until its buffer refills. The partly-zero blocks at
+    /// both edges of that gap used to unlock up to +24 dB on a short clip of hiss.
+    private static func testGainPolicyIgnoresUnderrunFill() {
+        let before = noise(rmsDBFS: -50, frames: 1_366, seed: 3)
+        let after = noise(rmsDBFS: -50, frames: 1_366, seed: 5)
+        func decision(gap: Int) -> UploadGainPolicy.Decision {
+            var analyzer = LoudnessAnalyzer()
+            analyzer.ingest(before)
+            analyzer.ingest([Int16](repeating: 0, count: gap))
+            analyzer.ingest(after)
+            return UploadGainPolicy.decide(analyzer.summary())
+        }
+        TestSupport.expectEqual(decision(gap: 0), .unchanged(.noSpeech))
+        // 167 of these 200 gaps used to be boosted.
+        let boostedGaps = stride(from: 1, to: 1_400, by: 7).filter { decision(gap: $0) != .unchanged(.noSpeech) }
+        TestSupport.expectEqual(boostedGaps, [])
     }
 
     // MARK: WAV
@@ -605,34 +661,42 @@ enum IOSAudioCoreTests {
         broken.discard()
     }
 
-    /// The leading zero-fill arrives as zero-level chunks before the first audible one.
+    /// The leading zero-fill arrives as zero-level chunks before the first audible one, in the
+    /// page's chunk sizes: 2,048 frames at 48 kHz per callback is 683, 683, then 682 at 16 kHz.
     private static func testCaptureRecordingIgnoresLeadingSilenceForGain() {
         let directory = makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        func chunk(_ sequence: Int, _ samples: [Int16], levels: [Float]) -> PCMChunk {
-            PCMChunk(session: 8, sequence: sequence, frameCount: samples.count, base64: PCM16.encodeLittleEndian(samples).base64EncodedString(), levels: levels, isFinal: false)
+        let recording = try! CaptureRecording(session: 8, fileURL: directory.appending(path: "noise.wav"))
+        var sequence = 0
+        func append(_ samples: [Int16], level: Float) {
+            var start = 0
+            while start < samples.count {
+                let end = min(start + (sequence % 3 == 2 ? 682 : 683), samples.count)
+                let frames = samples[start..<end]
+                _ = try! recording.append(PCMChunk(session: 8, sequence: sequence, frameCount: frames.count, base64: PCM16.encodeLittleEndian(frames).base64EncodedString(), levels: [level, level], isFinal: false))
+                sequence += 1
+                start = end
+            }
         }
 
-        // 200 ms of zero-fill in five chunks, then a second of -50 dBFS room noise and no speech.
-        let recording = try! CaptureRecording(session: 8, fileURL: directory.appending(path: "noise.wav"))
-        for sequence in 0..<5 {
-            _ = try! recording.append(chunk(sequence, [Int16](repeating: 0, count: 640), levels: [0]))
-        }
+        // Six callbacks of zero-fill (256 ms), then three of -50 dBFS room noise and no speech.
+        // The fill ends 256 frames into a block, which used to set the floor and allow +7.25 dB.
+        let fill = [Int16](repeating: 0, count: 4_096)
+        append(fill, level: 0)
+        TestSupport.expectEqual(sequence, 6)
         TestSupport.expect(!recording.isAudible, "Zero-fill is not audible")
-        let roomNoise = noise(rmsDBFS: -50, frames: 16_000, seed: 3)
-        _ = try! recording.append(chunk(5, Array(roomNoise[..<8_000]), levels: [0.003, 0.003]))
-        _ = try! recording.append(chunk(6, Array(roomNoise[8_000...]), levels: [0.003, 0.003]))
+        let roomNoise = noise(rmsDBFS: -50, frames: 2_048, seed: 3)
+        append(roomNoise, level: 0.003)
+        TestSupport.expect(recording.isAudible, "Room noise is audible")
 
         guard let finished = try! recording.finish() else {
-            TestSupport.expect(false, "A 1.2 s recording must finish")
+            TestSupport.expect(false, "A 384 ms recording must finish")
             return
         }
-        TestSupport.expectEqual(finished.frameCount, 19_200)
+        TestSupport.expectEqual(finished.frameCount, 6_144)
+        TestSupport.expectEqual(finished.skippedChunks, 0)
         TestSupport.expectEqual(finished.gain, .unchanged(.noSpeech))
-        TestSupport.expectEqual(
-            WAVEncoder.decode(try! Data(contentsOf: finished.fileURL))?.samples,
-            [Int16](repeating: 0, count: 3_200) + roomNoise
-        )
+        TestSupport.expectEqual(WAVEncoder.decode(try! Data(contentsOf: finished.fileURL))?.samples, fill + roomNoise)
     }
 
     private static func testCapturePageHTML() {
@@ -817,6 +881,43 @@ enum IOSAudioCoreTests {
         PCM16.apply(gainDB: gainDB, to: &reference)
         TestSupport.expectEqual(WAVEncoder.decode(try! Data(contentsOf: finished.fileURL))?.samples, reference)
         page.expectNoExceptions()
+    }
+
+    /// WebKit's zero-fill ends on a 128-frame render quantum inside a 2,048-frame callback, and
+    /// the resampler's 209 taps spread that edge over about 70 output frames. Through the page's
+    /// own DSP, a noise-only clip with a fill before it or inside it must still be left alone.
+    /// Each of these fills used to leave a partly-zero block that unlocked +19.75 to +24 dB.
+    private static func testJavaScriptZeroFillLeavesNoiseAlone() {
+        let directory = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Render quanta of zeros before the noise, and after its first callback.
+        let fills: [(lead: Int, gap: Int)] = [(67, 0), (74, 0), (97, 0), (0, 13), (0, 21), (75, 21)]
+        for (index, fill) in fills.enumerated() {
+            let session = 30 + index
+            let page = JSCapturePage(directory: directory)
+            page.evaluate("ffCapture.start({sid: \(session)}); 0")
+            // White noise at -45 dBFS and 48 kHz comes out of the resampler at about -50 dBFS.
+            page.evaluate("""
+                (() => {
+                  const lead = \(fill.lead * 128), gap = \(fill.gap * 128), before = gap ? 2048 : 0;
+                  const callbacks = Math.ceil((lead + before + gap) / 2048) + 1;
+                  __feed(__concat([new Float32Array(lead), __noise(before, -45, 3), new Float32Array(gap), __noise(callbacks * 2048 - lead - before - gap, -45, 5)]));
+                })();
+                ffCapture.stop(\(session));
+                __feed(__noise(2048, -45, 7));
+                0
+                """)
+            guard case .ended(session, "stopped", _)? = page.native.messages.last,
+                  let recording = page.native.recording, let finished = try! recording.finish() else {
+                TestSupport.expect(false, "Fill \(fill) must stop cleanly: \(page.native.messages.suffix(2))")
+                continue
+            }
+            TestSupport.expect(
+                finished.gain == .unchanged(.noSpeech),
+                "Fill \(fill): noise alone got \(finished.gain) for \(finished.loudness)"
+            )
+            page.expectNoExceptions()
+        }
     }
 
     private static func testJavaScriptDeadManSwitch() {
@@ -1224,6 +1325,18 @@ function __tone(rate, hz, seconds, amplitude, phaseFrames) {
   const n = Math.round(rate * seconds), x = new Float32Array(n), p = phaseFrames || 0;
   for (let i = 0; i < n; i++) x[i] = amplitude * Math.sin(2 * Math.PI * hz * (i + p) / rate);
   return x;
+}
+// n frames of white noise at rmsDB, from the same generator as the Swift tests' noise().
+function __noise(n, rmsDB, seed) {
+  const amplitude = Math.pow(10, rmsDB / 20) * Math.sqrt(3), x = new Float32Array(n);
+  let state = seed >>> 0;
+  for (let i = 0; i < n; i++) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; x[i] = amplitude * (state / 4294967295 * 2 - 1); }
+  return x;
+}
+function __concat(parts) {
+  const z = new Float32Array(parts.reduce((n, p) => n + p.length, 0)); let o = 0;
+  for (const p of parts) { z.set(p, o); o += p.length; }
+  return z;
 }
 // Feeds x to the ScriptProcessor in callback-sized blocks; returns the blocks fed.
 function __feed(x, frames) {

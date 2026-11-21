@@ -57,12 +57,18 @@ struct LoudnessSummary: Equatable {
 /// Streams 16 kHz samples into 20 ms block RMS values kept in a 0.5 dB histogram from
 /// -120 to 0 dBFS, so memory stays constant however long the recording runs.
 ///
-/// Blocks of exact digital silence are left out of the percentiles but still count towards
-/// `frames` and the peak. WebKit fills the stream with zeros before the microphone's first
-/// input and after an underrun. That fill isn't the room's background level: counted, 200 ms
-/// of it pulls the p10 floor to -120 dBFS and switches off the gain policy's noise guards.
+/// WebKit fills the stream with exact zeros before the microphone's first input and after an
+/// underrun. That fill isn't the room's background level, so the analyzer leaves it out of the
+/// blocks. Every zero before the first non-zero sample, and every later run of at least
+/// `fillRunFrames` zeros, counts towards `frames` and nothing else, and the blocks carry on
+/// across the gap. The fill rarely ends on a block boundary. A block that kept part of it would
+/// read low, and on a clip of ten blocks or fewer that one block sets the p10 floor and can
+/// switch off the gain policy's noise guards. Shorter runs of zeros belong to a quiet signal,
+/// and the analyzer measures them like any other sample.
 struct LoudnessAnalyzer {
     static let blockFrames = 320
+    /// 2 ms. Noise has to be quieter than about -95 dBFS to round to this many zeros in a row.
+    static let fillRunFrames = 32
     static let binWidthDB: Float = 0.5
     static let binCount = 240
     static let speechPercentile = 0.95
@@ -73,40 +79,45 @@ struct LoudnessAnalyzer {
     private var partialSumOfSquares: Double = 0
     private var partialFrames = 0
     private var peakMagnitude = 0
+    /// Zeros since the last non-zero sample. They join the blocks only if the run ends before
+    /// reaching `fillRunFrames`.
+    private var zeroRun = 0
+    private var hasSignal = false
     private(set) var frames = 0
 
     mutating func ingest<Samples: Collection>(_ samples: Samples) where Samples.Element == Int16 {
         for sample in samples {
+            guard sample != 0 else {
+                zeroRun += 1
+                continue
+            }
             let magnitude = Int(sample.magnitude)
             if magnitude > peakMagnitude { peakMagnitude = magnitude }
+            endZeroRun()
+            hasSignal = true
             let value = Double(sample) / 32_768
             partialSumOfSquares += value * value
             partialFrames += 1
-            if partialFrames == Self.blockFrames {
-                // The sum is exactly 0 only when every sample in the block is 0.
-                if partialSumOfSquares > 0 {
-                    Self.record(rms: (partialSumOfSquares / Double(partialFrames)).squareRoot(), in: &histogram)
-                    blockCount += 1
-                }
-                partialSumOfSquares = 0
-                partialFrames = 0
-            }
+            if partialFrames == Self.blockFrames { closeBlock() }
         }
         frames += samples.count
     }
 
-    /// Percentiles use complete blocks that aren't digital silence. When there are none, a
-    /// partial last block that isn't silent counts as one block. With nothing left to measure,
-    /// speech and floor are both -120 dBFS, which `UploadGainPolicy` treats as no speech.
+    /// Percentiles use complete blocks. When there are none, a partial last block with signal
+    /// counts as one block. With nothing left to measure, speech and floor are both -120 dBFS,
+    /// which `UploadGainPolicy` treats as no speech.
     func summary() -> LoudnessSummary {
-        var histogram = self.histogram
-        var blocks = blockCount
-        if blocks == 0 && partialSumOfSquares > 0 {
-            Self.record(rms: (partialSumOfSquares / Double(partialFrames)).squareRoot(), in: &histogram)
-            blocks = 1
+        var measured = self
+        measured.endZeroRun()
+        if measured.blockCount == 0 && measured.partialSumOfSquares > 0 {
+            Self.record(
+                rms: (measured.partialSumOfSquares / Double(measured.partialFrames)).squareRoot(),
+                in: &measured.histogram
+            )
+            measured.blockCount = 1
         }
         let peak = LevelMeter.decibels(fromRMS: Double(peakMagnitude) / 32_768)
-        guard blocks > 0 else {
+        guard measured.blockCount > 0 else {
             return LoudnessSummary(
                 frames: frames,
                 peakDBFS: peak,
@@ -117,9 +128,34 @@ struct LoudnessAnalyzer {
         return LoudnessSummary(
             frames: frames,
             peakDBFS: peak,
-            speechDBFS: Self.percentile(Self.speechPercentile, of: histogram, total: blocks),
-            noiseFloorDBFS: Self.percentile(Self.noiseFloorPercentile, of: histogram, total: blocks)
+            speechDBFS: Self.percentile(Self.speechPercentile, of: measured.histogram, total: measured.blockCount),
+            noiseFloorDBFS: Self.percentile(Self.noiseFloorPercentile, of: measured.histogram, total: measured.blockCount)
         )
+    }
+
+    /// Adds the current run of zeros to the blocks if it follows signal and is shorter than
+    /// `fillRunFrames`, and otherwise drops it as fill.
+    private mutating func endZeroRun() {
+        if hasSignal && zeroRun < Self.fillRunFrames {
+            var zeros = zeroRun
+            while zeros > 0 {
+                let added = min(zeros, Self.blockFrames - partialFrames)
+                partialFrames += added
+                zeros -= added
+                if partialFrames == Self.blockFrames { closeBlock() }
+            }
+        }
+        zeroRun = 0
+    }
+
+    private mutating func closeBlock() {
+        // The sum is exactly 0 only when every sample in the block is 0.
+        if partialSumOfSquares > 0 {
+            Self.record(rms: (partialSumOfSquares / Double(partialFrames)).squareRoot(), in: &histogram)
+            blockCount += 1
+        }
+        partialSumOfSquares = 0
+        partialFrames = 0
     }
 
     private static func record(rms: Double, in histogram: inout [Int]) {
