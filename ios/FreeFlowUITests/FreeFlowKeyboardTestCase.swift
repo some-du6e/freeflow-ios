@@ -149,10 +149,51 @@ class FreeFlowKeyboardTestCase: FreeFlowUITestCase {
         )
     }
 
-    /// Waits for the dictation to end and returns its final state.
+    /// Waits for the dictation to end and returns its final state: one of
+    /// `finalStates`, or `idle` once it has processed. The keyboard shows
+    /// "inserted" for only 1.5 s, which can pass between two of XCUITest's
+    /// slower queries; callers then confirm the outcome with
+    /// `requireHistoryStatus`.
     @MainActor
     func waitForDictationResult(in session: KeyboardSession, trace: KeyboardStateTrace) -> KeyboardDisplayState? {
-        session.keyboard.waitForStatus(Self.finalStates, timeout: 45, trace: trace)
+        let deadline = Date().addingTimeInterval(45)
+        while Date() < deadline {
+            let state = session.keyboard.waitForStatus(
+                Self.finalStates.union([.idle]),
+                timeout: max(1, deadline.timeIntervalSinceNow),
+                trace: trace
+            )
+            if state != .idle || trace.saw(.processing) {
+                return state
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return nil
+    }
+
+    /// Whether a dictation that should end in `expected` did: the keyboard
+    /// showed it, or went from processing back to idle after showing it.
+    func ended(_ result: KeyboardDisplayState?, in expected: KeyboardDisplayState, trace: KeyboardStateTrace) -> Bool {
+        result == expected || (result == .idle && trace.saw(.processing))
+    }
+
+    /// Waits for Home's Recent card to show the History entry the keyboard
+    /// wrote, with `title` as its status ("Inserted", "Inserted without
+    /// cleanup", "Nothing to insert", "Failed"). Unlike the keyboard's short
+    /// status message, it stays.
+    @MainActor
+    func requireHistoryStatus(_ title: String, in session: KeyboardSession, trace: KeyboardStateTrace) throws {
+        let predicate = NSPredicate(
+            format: "label == %@ AND identifier != %@",
+            title,
+            FreeFlowAccessibilityID.Keyboard.status
+        )
+        let row = session.app.staticTexts.matching(predicate).firstMatch
+        try require(
+            row.waitForExistence(timeout: 10),
+            "Home's Recent card shows no \"\(title)\" entry (seen: \(trace))",
+            evidence: [session.app]
+        )
     }
 
     /// Records for `seconds` by tapping the mic, then taps Done and waits for

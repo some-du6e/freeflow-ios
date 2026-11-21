@@ -34,8 +34,9 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         let (session, trace) = try openIdleKeyboard(options)
 
         let result = try dictateByTapping(in: session, trace: trace)
-        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
         try requireField(session, contains: MockProvider.transcript, trace: trace)
+        try requireHistoryStatus("Inserted", in: session, trace: trace)
         XCTAssertFalse(session.field.textValue.contains(MockProvider.cleanedText), "Cleanup ran anyway")
 
         let requests = try providerRequests()
@@ -51,16 +52,19 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         let (session, trace) = try openIdleKeyboard(options)
 
         let result = try dictateByTapping(in: session, trace: trace)
-        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
         try requireField(session, contains: MockProvider.transcript, trace: trace)
-        XCTAssertEqual(trace.texts[KeyboardDisplayState.inserted.rawValue], "Inserted without cleanup")
+        try requireHistoryStatus("Inserted without cleanup", in: session, trace: trace)
+        if let message = trace.texts[KeyboardDisplayState.inserted.rawValue] {
+            XCTAssertEqual(message, "Inserted without cleanup")
+        }
 
         let requests = try providerRequests()
         XCTAssertEqual(requests.transcriptions.first?["status"] as? Int, 200)
         XCTAssertFalse(requests.chats.isEmpty, "No cleanup request was made")
         XCTAssertTrue(requests.chats.allSatisfy { $0["status"] as? Int == 500 })
-        report("Cleanup failed with HTTP 500 \(requests.chats.count) time(s); the raw transcript went in "
-            + "with \"\(trace.texts[KeyboardDisplayState.inserted.rawValue] ?? "?")\"")
+        report("Cleanup failed with HTTP 500 \(requests.chats.count) time(s); the raw transcript went in, "
+            + "and History says \"Inserted without cleanup\" (seen: \(trace))")
     }
 
     @MainActor
@@ -72,7 +76,7 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
 
         let result = try dictateByTapping(in: session, trace: trace)
         XCTAssertEqual(result, .error, "seen: \(trace)")
-        Thread.sleep(forTimeInterval: 1)
+        try requireHistoryStatus("Failed", in: session, trace: trace)
         XCTAssertEqual(session.field.textValue, before, "The field changed after a failed transcription")
 
         let requests = try providerRequests()
@@ -89,8 +93,11 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         let before = session.field.textValue
 
         let result = try dictateByTapping(in: session, trace: trace)
-        XCTAssertEqual(result, .nothingToInsert, "seen: \(trace)")
-        XCTAssertEqual(trace.texts[KeyboardDisplayState.nothingToInsert.rawValue], "Nothing to transcribe")
+        XCTAssertTrue(ended(result, in: .nothingToInsert, trace: trace), "seen: \(trace)")
+        try requireHistoryStatus("Nothing to insert", in: session, trace: trace)
+        if let message = trace.texts[KeyboardDisplayState.nothingToInsert.rawValue] {
+            XCTAssertEqual(message, "Nothing to transcribe")
+        }
         XCTAssertEqual(session.field.textValue, before)
         XCTAssertEqual(try providerRequests().chats.count, 0)
     }
@@ -119,7 +126,7 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
     func testInsertLastReinsertsPreviousResult() throws {
         let (session, trace) = try openIdleKeyboard(Self.synthetic)
         let result = try dictateByTapping(in: session, trace: trace)
-        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
         try requireField(session, contains: MockProvider.cleanedText, trace: trace)
 
         // Insert last is enabled again once the inserted message clears.
@@ -143,6 +150,30 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         report("Insert last added the text again with no provider call (states after the tap: \(afterDictation))")
     }
 
+    /// The keyboard records a KeyboardStatus in the App Group only when its
+    /// own `hasFullAccess` is true, and Home's setup checklist shows it. So
+    /// "Full Access: On" on Home is Full Access as the extension sees it.
+    @MainActor
+    func testKeyboardReportsFullAccessToTheApp() throws {
+        let (session, _) = try openIdleKeyboard(.dictationReady)
+        let keyboardItem = element("freeflow.app.setup.keyboard", in: session.app)
+        let fullAccessItem = element("freeflow.app.setup.fullAccess", in: session.app)
+        // Home reloads the checklist every 1.5 s.
+        let reported = waitUntil(timeout: 15) {
+            keyboardItem.staticTexts["Added"].exists && fullAccessItem.staticTexts["On"].exists
+        }
+        capture("home-checklist")
+        let details = [keyboardItem, fullAccessItem].map { item in
+            item.staticTexts.allElementsBoundByIndex.map { $0.label }.joined(separator: ": ")
+        }
+        try require(
+            reported,
+            "Home doesn't show the keyboard's Full Access report: \(details.joined(separator: "; "))",
+            evidence: [session.app]
+        )
+        report("The keyboard reported Full Access to the app; Home shows \(details.joined(separator: "; "))")
+    }
+
     /// Hold to talk: press and hold the mic, release to stop.
     @MainActor
     func testHoldToTalkRecordsWhileHeld() throws {
@@ -154,8 +185,9 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         mic.press(forDuration: held)
         let result = waitForDictationResult(in: session, trace: trace)
         capture("result-\(result?.rawValue ?? "none")")
-        XCTAssertEqual(result, .inserted, "seen: \(trace)")
+        XCTAssertTrue(ended(result, in: .inserted, trace: trace), "seen: \(trace)")
         try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+        try requireHistoryStatus("Inserted", in: session, trace: trace)
 
         // The recording ends at release, so it can't be longer than the hold.
         let requests = try providerRequests()
@@ -187,13 +219,16 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
 
         let result = try dictateByTapping(in: session, recordFor: 2, trace: trace)
         try require(
-            result == .inserted,
+            ended(result, in: .inserted, trace: trace),
             "Dictation through \(capturePath) ended in \(describe(session.keyboard.status)) (seen: \(trace))",
             evidence: session.keyboard.hosts
         )
         try requireField(session, contains: MockProvider.cleanedText, trace: trace)
+        try requireHistoryStatus("Inserted", in: session, trace: trace)
         XCTAssertTrue(trace.saw(.recording, before: .processing), "seen: \(trace)")
-        XCTAssertTrue(trace.saw(.processing, before: .inserted), "seen: \(trace)")
+        if trace.saw(.inserted) {
+            XCTAssertTrue(trace.saw(.processing, before: .inserted), "seen: \(trace)")
+        }
 
         let requests = try providerRequests()
         XCTAssertEqual(requests.transcriptions.count, 1, "transcription requests")
@@ -208,6 +243,8 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
             XCTAssertEqual(chat["status"] as? Int, 200)
             XCTAssertEqual((chat["chat"] as? [String: Any])?["kind"] as? String, "cleanup")
         }
-        report("States seen: \(trace); the field holds \"\(session.field.textValue)\"")
+        let message = trace.saw(.inserted) ? "seen" : "missed between queries; History shows Inserted"
+        report("States seen: \(trace) (the inserted message was \(message)); "
+            + "the field holds \"\(session.field.textValue)\"")
     }
 }

@@ -35,6 +35,8 @@ enum FreeFlowAccessibilityID {
 
     enum Recorder {
         static let done = "freeflow.recorder.done"
+        /// Shown when a dictate URL's session isn't the one the keyboard awaits.
+        static let start = "freeflow.recorder.start"
         static let stop = "freeflow.recorder.stop"
         static let cancel = "freeflow.recorder.cancel"
         static let status = "freeflow.recorder.status"

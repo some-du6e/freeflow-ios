@@ -141,19 +141,28 @@ final class FreeFlowScreenshotTests: FreeFlowKeyboardTestCase {
             open.tap()
         }
         let status = element(FreeFlowAccessibilityID.Recorder.status, in: app)
+        let start = element(FreeFlowAccessibilityID.Recorder.start, in: app)
+        // The keyboard isn't awaiting this URL's session, so the recorder may
+        // open idle with a Start button; earlier builds started at once.
+        _ = waitUntil(timeout: 20) { start.exists || status.textValue == "recording" }
+        if start.exists {
+            captureNamed("app-recorder-handoff-idle-\(appearance)")
+            start.tap()
+        }
         try require(
             waitUntil(timeout: 20) { status.textValue == "recording" },
-            "The dictate URL didn't start the recorder (status \(status.textValue))",
+            "The dictate URL's recorder didn't record (status \(status.textValue))",
             evidence: [app, springboard]
         )
         Thread.sleep(forTimeInterval: 1.5)
         captureNamed("app-recorder-handoff-recording-\(appearance)")
         element(FreeFlowAccessibilityID.Recorder.stop, in: app).tap()
         try require(
-            waitUntil(timeout: 45) { status.textValue == "handed-off" },
-            "The handoff recorder ended in \(status.textValue), not handed-off",
+            waitUntil(timeout: 45) { ["handed-off", "done"].contains(status.textValue) },
+            "The dictate URL's recorder ended in \(status.textValue)",
             evidence: [app]
         )
+        report("The dictate URL's recorder ended in \(status.textValue)")
         Thread.sleep(forTimeInterval: 0.5)
         captureNamed("app-recorder-handed-off-\(appearance)")
     }

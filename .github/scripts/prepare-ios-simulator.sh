@@ -234,12 +234,15 @@ import sys
 
 path = sys.argv[1]
 if not os.path.exists(path):
-    sys.exit(f"No App Group preferences yet at {path}")
+    sys.exit(f"No App Group preferences at {path}. Later UI tests may have reset the app; "
+             "testKeyboardReportsFullAccessToTheApp checks what the keyboard recorded.")
 with open(path, "rb") as file:
     preferences = plistlib.load(file)
 status = preferences.get("ios_keyboard_status")
 if status is None:
-    sys.exit("The keyboard has not recorded a KeyboardStatus (it does so only with Full Access)")
+    sys.exit("No KeyboardStatus in the App Group now. This doesn't mean Full Access failed: UI tests "
+             "that run after the keyboard tests reset the app, which clears it. "
+             "testKeyboardReportsFullAccessToTheApp checks what the keyboard recorded.")
 if isinstance(status, (bytes, bytearray)):
     status = json.loads(status.decode("utf-8"))
 # KeyboardStatus holds flags and failure kinds only, never user content.
@@ -265,10 +268,16 @@ PY
     # rates, never text or audio: its status changes show the order of the
     # states each dictation went through, and the capture lines say whether
     # the audio came from WebKit's microphone or the synthetic tone.
-    echo "::group::The FreeFlow keyboard's own log (states and capture events)"
-    xcrun simctl spawn "$udid" log show --last 45m --info --style compact --predicate \
-        "subsystem == \"$keyboard_id\"" \
-        | tail -n 400 || echo "Could not read the simulator log"
+    echo "::group::The FreeFlow keyboard's capture sessions"
+    xcrun simctl spawn "$udid" log show --last 60m --info --style compact --predicate \
+        "subsystem == \"$keyboard_id\" AND category == \"WebAudioCapture\"" \
+        | tail -n 300 || echo "Could not read the simulator log"
+    echo "::endgroup::"
+
+    echo "::group::The FreeFlow keyboard's state changes"
+    xcrun simctl spawn "$udid" log show --last 60m --info --style compact --predicate \
+        "subsystem == \"$keyboard_id\" AND category == \"Keyboard\"" \
+        | tail -n 300 || echo "Could not read the simulator log"
     echo "::endgroup::"
 }
 
