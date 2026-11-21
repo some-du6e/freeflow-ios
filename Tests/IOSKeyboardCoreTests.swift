@@ -972,12 +972,14 @@ enum IOSKeyboardCoreTests {
         TestSupport.expectEqual(mismatch.nextWakeUp, at(10) + PendingDictation.maxAge)
 
         // The explicit tap inserts into the current field (its own spacing).
+        // It lets go of the store's copy first, so a keyboard stopped part way
+        // can't leave it for another to insert again.
         let tapEffects = mismatch.handle(.insertPendingTapped(document: document(fieldB, before: "Hi")), now: at(20))
         TestSupport.expectEqual(tapEffects, [
+            .stopAwaitingApp(sessionID: sessionOne),
             .insert(TranscriptRouting.insertionText(for: "Handed back.", precedingText: "Hi")),
             .rememberForInsertLast(text: "Handed back.", at: at(20)),
             .announce("Inserted from FreeFlow"),
-            .stopAwaitingApp(sessionID: sessionOne),
         ])
         TestSupport.expectEqual(mismatch.phase, .inserted(.handoff, until: at(21.5)))
 
@@ -1053,10 +1055,10 @@ enum IOSKeyboardCoreTests {
 
             let tap = machine.handle(.insertPendingTapped(document: document(fieldB, before: "Hi")), now: at(20))
             TestSupport.expectEqual(tap, [
+                .stopAwaitingApp(sessionID: sessionOne),
                 .insert(TranscriptRouting.insertionText(for: "On my way.", precedingText: "Hi")),
                 .rememberForInsertLast(text: "On my way.", at: at(20)),
                 .announce("Inserted from FreeFlow. Return wasn't pressed."),
-                .stopAwaitingApp(sessionID: sessionOne),
             ])
             TestSupport.expectEqual(machine.phase, .inserted(.handoffWithoutReturn, until: at(21.5)))
         }
@@ -1292,7 +1294,7 @@ enum IOSKeyboardCoreTests {
         _ = blocked.handle(.setupChanged(ready), now: at(15))
         let tapped = blocked.handle(.insertPendingTapped(document: document(fieldB, before: nil)), now: at(15))
         TestSupport.expectEqual(insertions(tapped), [TranscriptRouting.insertionText(for: "Held.", precedingText: nil)])
-        TestSupport.expectEqual(tapped.last, letGo)
+        TestSupport.expectEqual(tapped.first, letGo)
 
         // Nothing awaited any more: another keyboard used the result or let
         // it go, so this offer ends too, and hiding the keyboard afterwards

@@ -930,10 +930,9 @@ struct KeyboardDictationMachine: Equatable {
         // The check reads the result without removing it, so a keyboard that
         // iOS stops before it acts loses nothing. Every outcome but the offer
         // below is final, so it lets go of the session and its result, before
-        // any insertion: a keyboard stopped in between then loses this result
-        // rather than leaving it for the next keyboard to insert a second
-        // time. The Insert from FreeFlow tap inserts first instead, since a
-        // result offered again still waits for another tap.
+        // any insertion, as the Insert from FreeFlow tap does: a keyboard
+        // stopped in between then loses this result rather than leaving it
+        // for the next keyboard to insert a second time.
         var effects: [KeyboardDictationEffect] = [.stopAwaitingApp(sessionID: pending.sessionID)]
         let hasText = Self.hasContent(pending.text)
 
@@ -988,10 +987,12 @@ struct KeyboardDictationMachine: Equatable {
             return [letGo]
         }
         // The tap is the user's consent to insert the text into the current
-        // field, but not to press return in it. The store's copy goes after
-        // the text is in, so a keyboard stopped in between offers it again
-        // rather than losing it.
-        return performHandoffInsertion(pending, pressEnter: false, document: document, now: now) + [letGo]
+        // field, but not to press return in it. The store's copy goes first,
+        // as on auto-insert: a keyboard stopped before the text is in then
+        // loses it rather than leaving it for the next keyboard, which would
+        // insert it again on its own, with return, in the field FreeFlow was
+        // opened from.
+        return [letGo] + performHandoffInsertion(pending, pressEnter: false, document: document, now: now)
     }
 
     /// Inserts a handoff result and moves to `inserted`. `pressEnter` is

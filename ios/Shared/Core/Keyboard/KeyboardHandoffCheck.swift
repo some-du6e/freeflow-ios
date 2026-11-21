@@ -66,10 +66,10 @@ enum KeyboardHandoffCheck {
     ///   what this check never does. (CI's logs never caught such a read
     ///   lagging; the lost results came from a destructive read in a keyboard
     ///   process that iOS then stopped.) FreeFlow can leave such a result if
-    ///   a keyboard lets go of its session while the app is saving it. It
-    ///   goes once it can never be inserted, expired or unreadable: at a
-    ///   check after it expires, at the app's cleanup when it becomes active,
-    ///   or with Clear History.
+    ///   a keyboard lets go of its session while the app is saving it. A
+    ///   check removes it once it can never be inserted (expired or
+    ///   unreadable); the app's cleanup when it becomes active and Clear
+    ///   History remove it right away.
     /// - A result for the awaited session, fresh or expired:
     ///   `.handoffResultArrived`, with the result left in the store until
     ///   the machine lets go of it. The machine checks freshness, so an
