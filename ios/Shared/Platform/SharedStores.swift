@@ -201,7 +201,7 @@ final class PendingDictationStore {
     /// becomes active. A result for a session the keyboard isn't waiting
     /// for (or an unreadable one) is removed. An expired result for the
     /// session it is waiting for loses its text but stays as a marker, so the
-    /// keyboard's next `take` still reports `.expired` and the keyboard stops
+    /// keyboard's next check still reports `.expired` and the keyboard stops
     /// waiting instead of waiting for a result that's gone. Never touches the
     /// awaited session.
     func discardUnclaimedResult(now: Date) {
@@ -221,10 +221,12 @@ final class PendingDictationStore {
         handoffLog.info("awaited session and stored result cleared")
     }
 
-    /// The stored result. An unreadable one is removed.
+    /// The stored result. An unreadable one is removed, including a value
+    /// that isn't data at all, as `peekResult()` calls it unreadable.
     private func loadResult() -> PendingDictation? {
-        guard let data = defaults.data(forKey: Self.pendingDictationKey) else { return nil }
-        guard let pending = try? JSONDecoder().decode(PendingDictation.self, from: data) else {
+        guard let object = defaults.object(forKey: Self.pendingDictationKey) else { return nil }
+        guard let data = object as? Data,
+              let pending = try? JSONDecoder().decode(PendingDictation.self, from: data) else {
             discardResult()
             return nil
         }

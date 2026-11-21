@@ -52,6 +52,8 @@ final class KeyboardViewController: UIInputViewController {
     private let deleteRepeater = KeyboardDeleteRepeater()
     private lazy var haptics = UIImpactFeedbackGenerator(style: .light)
     private var lastLoggedStatus: KeyboardDictationStatus?
+    /// When this controller last came on screen, for the log line on hiding.
+    private var appearedAt: Date?
 
     #if DEBUG && targetEnvironment(simulator)
     /// A fixed display state for UI-test screenshots; see
@@ -100,6 +102,7 @@ final class KeyboardViewController: UIInputViewController {
             NetworkMonitor.shared.start()
         }
         send(.setupChanged(currentSetup()))
+        appearedAt = Date()
         send(.appeared)
         recordKeyboardStatus()
         checkForAppResult()
@@ -120,6 +123,11 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         deleteRepeater.stop()
+        // How long the keyboard was up: an Insert from FreeFlow offer lets go
+        // of its result only after `KeyboardDictationMachine.offerReleaseGrace`.
+        let onScreen = appearedAt.map { String(format: "%.1f", Date().timeIntervalSince($0)) } ?? "unknown"
+        appearedAt = nil
+        keyboardLog.info("keyboard hidden after \(onScreen, privacy: .public) s on screen, controller \(self.controllerNumber, privacy: .public) of \(Self.controllersLoaded, privacy: .public)")
         send(.disappeared)
         if let capture = Self.processCapture, capture.delegate === self {
             capture.detach()

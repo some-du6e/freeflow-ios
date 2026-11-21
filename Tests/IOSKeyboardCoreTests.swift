@@ -45,6 +45,7 @@ enum IOSKeyboardCoreTests {
         testUnconfirmedFieldWithNothingToInsertShowsNoCTA()
         testHeldHandoffResultSurvivesForInsertLast()
         testPendingInsertExpiresAndDismisses()
+        testOfferLetsGoOnceSeenAndLeft()
         testHandoffWaitEnds()
         testBlockedPressesKeepWaitingForTheApp()
         testHandoffAdoptionCountsFromTheOpenTime()
@@ -986,7 +987,7 @@ enum IOSKeyboardCoreTests {
     }
 
     private static func testExpiredHandoffResultEndsTheWait() {
-        // `PendingDictationStore.take` reports `.expired` for an old result
+        // `PendingDictationStore.result(for:now:)` reports `.expired` for an old result
         // (it used to say "nothing yet"), and the keyboard hands it over like
         // a fresh one. The wait must end at once, with a short message.
         var machine = readyMachine()
@@ -1210,6 +1211,76 @@ enum IOSKeyboardCoreTests {
         // insertPendingTapped does nothing outside pending-insert.
         var idle = readyMachine()
         TestSupport.expectEqual(idle.handle(.insertPendingTapped(document: document()), now: at(1)), [])
+    }
+
+    private static func testOfferLetsGoOnceSeenAndLeft() {
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(10), text: "Held.", pressEnter: false)
+        let arrival = KeyboardDictationEvent.handoffResultArrived(pending, expectedDocumentID: fieldA, document: document(fieldB))
+        let letGo = KeyboardDictationEffect.stopAwaitingApp(sessionID: sessionOne)
+        let grace = KeyboardDictationMachine.offerReleaseGrace
+        func offering() -> KeyboardDictationMachine {
+            var machine = readyMachine()
+            _ = machine.handle(arrival, now: at(12))
+            return machine
+        }
+
+        // Safari showed the keyboard for an instant on return and dropped it
+        // (CI, 2026-11-21): an offer hidden within the grace keeps its result
+        // in the store, so the next keyboard, maybe in a new process, offers
+        // it again.
+        var flashed = offering()
+        TestSupport.expectEqual(flashed.handle(.disappeared, now: at(12) + grace - 0.1), [])
+        TestSupport.expectEqual(status(flashed), .pendingInsert)
+
+        // Shown again, the check finds the same result, which keeps the offer
+        // without letting go of it. Seen for the grace and then left, the
+        // offer ends and its result leaves the store; Insert last has it.
+        TestSupport.expectEqual(flashed.handle(.appeared, now: at(20)), [])
+        TestSupport.expectEqual(
+            flashed.handle(arrival, now: at(20)),
+            [.rememberForInsertLast(text: "Held.", at: at(20)), .announce(KeyboardDictationDisplay.pendingInsertText)]
+        )
+        TestSupport.expectEqual(flashed.handle(.disappeared, now: at(20) + grace), [letGo])
+        TestSupport.expectEqual(flashed.phase, .idle)
+        TestSupport.expectEqual(flashed.handle(.appeared, now: at(30)), [])
+        TestSupport.expectEqual(flashed.phase, .idle)
+
+        // The grace counts from when the offer shows, not from its arrival.
+        var arrivedHidden = readyMachine()
+        _ = arrivedHidden.handle(.disappeared, now: at(11))
+        _ = arrivedHidden.handle(arrival, now: at(12))
+        TestSupport.expectEqual(arrivedHidden.handle(.appeared, now: at(30)), [])
+        TestSupport.expectEqual(arrivedHidden.handle(.disappeared, now: at(31)), [])
+        TestSupport.expectEqual(status(arrivedHidden), .pendingInsert)
+
+        // A press that can't record keeps the offer, as it keeps a wait for
+        // the app, and only says why.
+        var blocked = offering()
+        let lowMemory = KeyboardDictationSetup(hasFullAccess: true, microphoneGranted: true, hasAPIKey: true, availableMemoryBytes: 1024)
+        _ = blocked.handle(.setupChanged(lowMemory), now: at(13))
+        TestSupport.expectEqual(
+            blocked.handle(.micPressBegan(documentID: fieldB), now: at(13)),
+            [.announce("Not enough memory to record here. Record in FreeFlow instead.")]
+        )
+        _ = blocked.handle(.setupChanged(noAPIKey), now: at(14))
+        TestSupport.expectEqual(
+            blocked.handle(.micPressBegan(documentID: fieldB), now: at(14)),
+            [.announce("Open FreeFlow to add your API key")]
+        )
+        TestSupport.expectEqual(status(blocked), .pendingInsert)
+        TestSupport.expectEqual(blocked.attempt, 0)
+        _ = blocked.handle(.setupChanged(ready), now: at(15))
+        let tapped = blocked.handle(.insertPendingTapped(document: document(fieldB, before: nil)), now: at(15))
+        TestSupport.expectEqual(insertions(tapped), [TranscriptRouting.insertionText(for: "Held.", precedingText: nil)])
+        TestSupport.expectEqual(tapped.last, letGo)
+
+        // Nothing awaited any more: another keyboard used the result or let
+        // it go, so this offer ends too, and hiding the keyboard afterwards
+        // has nothing to let go of.
+        var usedElsewhere = offering()
+        TestSupport.expectEqual(usedElsewhere.handle(.handoffAbsent, now: at(20)), [])
+        TestSupport.expectEqual(usedElsewhere.phase, .idle)
+        TestSupport.expectEqual(usedElsewhere.handle(.disappeared, now: at(30)), [])
     }
 
     private static func testHandoffWaitEnds() {

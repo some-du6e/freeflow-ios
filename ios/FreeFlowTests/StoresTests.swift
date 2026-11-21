@@ -169,6 +169,26 @@ final class StoresTests: XCTestCase {
 
         XCTAssertEqual(store.result(for: UUID(), now: start), PendingDictationTake.none)
         XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+
+        // A value that isn't data at all is unreadable too, as peekResult()
+        // calls it, and goes the same way.
+        defaults.set("not data", forKey: "ios_pending_dictation")
+        XCTAssertEqual(store.result(for: UUID(), now: start), PendingDictationTake.none)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+
+        // A check that reports it removed one did remove it.
+        let session = UUID()
+        store.awaitedSessionID = session
+        defaults.set(42, forKey: "ios_pending_dictation")
+        let checked = KeyboardHandoffCheck.checkAndReport(
+            store,
+            ledger: KeyboardHandoffLedger(defaults: defaults),
+            now: start,
+            document: KeyboardDictationDocument(identifier: nil, textBeforeCursor: nil)
+        )
+        XCTAssertEqual(checked.event, .handoffPending(sessionID: session, openedAt: nil))
+        XCTAssertTrue(checked.report.removedResult)
+        XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"), "The report said the check removed it")
     }
 
     func testPendingResultReplacesTheEarlierOne() throws {

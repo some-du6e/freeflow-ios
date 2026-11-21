@@ -24,9 +24,10 @@ import XCTest
 /// that keyboard process before it could use it. The next keyboard found the
 /// session still awaited and nothing stored, and waited for good (CI,
 /// 2026-11-21, in either order). The check now leaves the result in the store
-/// until the keyboard uses it or lets it go (KeyboardHandoffCheck,
-/// KeyboardDictationMachine.handoffSessionID), and both runs must succeed.
-/// Running before
+/// until the keyboard uses it or lets it go, and an offer hidden within
+/// KeyboardDictationMachine.offerReleaseGrace of showing keeps it for the
+/// next keyboard (KeyboardHandoffCheck, KeyboardDictationMachine
+/// .handoffSessionID). Both runs must succeed. Running before
 /// FreeFlowKeyboardSetupTests, the first one repairs the keyboard's setup
 /// in Settings itself when CI's simulator preparation didn't take, as
 /// openFreeFlowKeyboard does.

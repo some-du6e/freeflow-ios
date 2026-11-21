@@ -124,8 +124,9 @@ enum KeyboardDictationEvent: Equatable {
     case pipelineFinished(attempt: Int, result: DictationResult, document: KeyboardDictationDocument)
     /// `message` is `DictationPipeline.userFacingMessage(for:isOnline:)`.
     case pipelineFailed(attempt: Int, message: String)
-    /// `PendingDictationStore.take` returned the app's result, fresh or
-    /// expired; the machine checks freshness itself.
+    /// The handoff check found the app's result for the awaited session,
+    /// fresh or expired, and left it in the store (`KeyboardHandoffCheck`);
+    /// the machine checks freshness itself.
     /// `expectedDocumentID` is the field the keyboard opened the app from,
     /// if this process knows it; the result is auto-inserted only when the
     /// current field matches it.
@@ -202,6 +203,11 @@ struct KeyboardDictationMachine: Equatable {
     /// Matches the macOS overlay's error toast.
     static let errorDisplayDuration: TimeInterval = 6
     static let handoffCheckInterval: TimeInterval = 1
+    /// How long an Insert from FreeFlow offer must have been on screen for
+    /// hiding the keyboard to end it. A briefer offer keeps its result in the
+    /// store for the next keyboard: in CI, Safari showed the keyboard for an
+    /// instant on return and dropped it, and iOS stopped that process.
+    static let offerReleaseGrace: TimeInterval = 2
     /// Time the app gets to transcribe after its recorder stops.
     static let handoffProcessingMargin: TimeInterval = 120
     /// How long to wait for the app after opening it: as long as its recorder
@@ -216,7 +222,7 @@ struct KeyboardDictationMachine: Equatable {
     static let fieldChangedMessage = "The text field changed, so nothing was inserted. Tap Insert last to add it."
     static let fieldChangedReturnMessage = "The text field changed, so return wasn't pressed."
     /// The app's result was older than `PendingDictation.maxAge` when the
-    /// keyboard took it.
+    /// keyboard found it.
     static let handoffExpiredMessage = "The FreeFlow result expired. Tap Insert last to add it."
     static let handoffExpiredEmptyMessage = "The FreeFlow result expired."
     static let interruptedMessage = "Recording stopped unexpectedly. Try again."
@@ -305,6 +311,9 @@ struct KeyboardDictationMachine: Equatable {
     /// Increments with every capture start, so late pipeline results from a
     /// cancelled dictation are recognized and dropped.
     private(set) var attempt: Int
+    /// When the Insert from FreeFlow offer last came on screen. Read only
+    /// while the offer shows; each arrival and appearance sets it again.
+    private(set) var offerShownAt: Date?
 
     init(
         phase: Phase = .idle,
@@ -403,9 +412,13 @@ struct KeyboardDictationMachine: Equatable {
             return setupChanged(newSetup)
         case .appeared:
             isVisible = true
-            return expireMessageLettingGoOfAnOffer(now: now)
+            let effects = expireMessageLettingGoOfAnOffer(now: now)
+            if case .pendingInsert = phase {
+                offerShownAt = now
+            }
+            return effects
         case .disappeared:
-            return disappeared()
+            return disappeared(now: now)
         case .micPressBegan(let documentID):
             return micPressBegan(documentID: documentID, now: now)
         case .micPressEnded:
@@ -437,7 +450,16 @@ struct KeyboardDictationMachine: Equatable {
         case .handoffPending(let sessionID, let openedAt):
             return handoffPending(sessionID: sessionID, openedAt: openedAt, now: now)
         case .handoffAbsent:
-            if case .waitingForApp = phase { phase = restingPhase }
+            switch phase {
+            case .waitingForApp, .pendingInsert:
+                // Nothing awaited any more: another keyboard used or let go of
+                // the result. An offer here ends too; Insert last has the text.
+                phase = restingPhase
+                offerShownAt = nil
+            case .idle, .setupNeeded, .starting, .recording, .processing, .inserted, .nothingToInsert, .error,
+                 .fallbackAvailable:
+                break
+            }
             return []
         case .tick:
             return tick(now: now)
@@ -550,8 +572,10 @@ struct KeyboardDictationMachine: Equatable {
         return []
     }
 
-    private mutating func disappeared() -> [KeyboardDictationEffect] {
+    private mutating func disappeared(now: Date) -> [KeyboardDictationEffect] {
         isVisible = false
+        let offerShown = offerShownAt
+        offerShownAt = nil
         switch phase {
         case .starting, .recording:
             phase = restingPhase
@@ -562,8 +586,18 @@ struct KeyboardDictationMachine: Equatable {
             guard processing.audio == nil else { return [] }
             phase = restingPhase
             return [.cancelCapture]
+        case .pendingInsert(let pending, _):
+            // Seen and left: the offer ends and its result leaves the store,
+            // so it doesn't come back in another app later. Insert last has
+            // the text. An offer gone almost at once keeps it for the next
+            // keyboard (`offerReleaseGrace`).
+            guard let shownAt = offerShown, now.timeIntervalSince(shownAt) >= Self.offerReleaseGrace else {
+                return []
+            }
+            phase = restingPhase
+            return [.stopAwaitingApp(sessionID: pending.sessionID)]
         case .idle, .setupNeeded, .inserted, .nothingToInsert, .error, .fallbackAvailable,
-             .waitingForApp, .pendingInsert:
+             .waitingForApp:
             return []
         }
     }
@@ -578,16 +612,16 @@ struct KeyboardDictationMachine: Equatable {
         guard let setup else { return [] }
 
         // A press that can't record doesn't replace a dictation the app is
-        // still recording: keep waiting and only say why.
+        // still recording, or a result it offers: keep it and only say why.
         if let issue = setup.blockingIssue {
-            if isWaitingForApp {
+            if handoffSessionID != nil {
                 return [.announce(KeyboardDictationDisplay.setupText(for: issue))]
             }
             phase = .setupNeeded(issue)
             return [announcement]
         }
         guard setup.hasMemoryToRecord else {
-            if isWaitingForApp {
+            if handoffSessionID != nil {
                 return [.announce(KeyboardDictationDisplay.fallbackText(for: .lowMemory))]
             }
             phase = .fallbackAvailable(.lowMemory)
@@ -930,9 +964,11 @@ struct KeyboardDictationMachine: Equatable {
         // user didn't dictate into. Remember it now: after Dismiss, expiry or
         // a new dictation, Insert last can still add it. The result stays in
         // the store, still awaited, until the tap, Dismiss, a new dictation,
-        // Insert last or expiry lets it go, so a keyboard that iOS stops
+        // Insert last, expiry or hiding the keyboard once the offer has shown
+        // for `offerReleaseGrace` lets it go, so a keyboard that iOS stops
         // while offering it doesn't lose it.
         phase = .pendingInsert(pending, until: pending.createdAt + PendingDictation.maxAge)
+        offerShownAt = isVisible ? now : nil
         return [.rememberForInsertLast(text: pending.text, at: now), announcement]
     }
 
