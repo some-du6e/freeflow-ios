@@ -79,6 +79,19 @@ final class AppUITestHooksTests: XCTestCase {
         XCTAssertTrue(stores.defaults.bool(forKey: "ios_debug_synthetic_capture"))
     }
 
+    func testCaptureUnavailableHookSetsAndClearsTheAppGroupFlag() {
+        let stores = AppTestStores()
+        defer { stores.tearDown() }
+
+        apply([Argument.captureUnavailable: "YES"], stores)
+        XCTAssertTrue(stores.defaults.bool(forKey: "ios_debug_capture_unavailable"))
+        XCTAssertTrue(WebAudioCaptureUITestSwitch.isOn(stores.defaults))
+
+        apply([Argument.captureUnavailable: "NO"], stores)
+        XCTAssertFalse(stores.defaults.bool(forKey: "ios_debug_capture_unavailable"))
+        XCTAssertFalse(WebAudioCaptureUITestSwitch.isOn(stores.defaults))
+    }
+
     func testKeyboardStateHookSetsAndClearsTheForcedState() {
         let stores = AppTestStores()
         defer { stores.tearDown() }
@@ -100,6 +113,7 @@ final class AppUITestHooksTests: XCTestCase {
         stores.settings.set("custom/llm-model", for: FreeFlowSettingKey.postProcessingModel)
         stores.defaults.set(Data("{}".utf8), forKey: "ios_keyboard_status")
         stores.defaults.set("synthetic", forKey: "ios_unknown_future_key")
+        stores.defaults.set(true, forKey: "ios_debug_capture_unavailable")
         stores.pendingDictations.awaitedSessionID = UUID()
 
         let result = apply([
@@ -149,6 +163,7 @@ final class AppUITestHooksTests: XCTestCase {
         XCTAssertEqual(Argument.microphoneGranted, "FreeFlowUITestMicrophoneGranted")
         XCTAssertEqual(Argument.preserveExactWording, "FreeFlowUITestPreserveExactWording")
         XCTAssertEqual(Argument.syntheticCapture, "FreeFlowUITestSyntheticCapture")
+        XCTAssertEqual(Argument.captureUnavailable, "FreeFlowUITestCaptureUnavailable")
         XCTAssertEqual(Argument.keyboardState, "FreeFlowUITestKeyboardState")
     }
 

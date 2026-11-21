@@ -24,6 +24,10 @@ enum FreeFlowUITestHooks {
         static let preserveExactWording = "FreeFlowUITestPreserveExactWording"
         /// YES|NO sets the App Group bool `ios_debug_synthetic_capture`.
         static let syntheticCapture = "FreeFlowUITestSyntheticCapture"
+        /// YES|NO sets the App Group bool `ios_debug_capture_unavailable`.
+        /// While it is on, the keyboard's capture fails to start
+        /// (`WebAudioCaptureUITestSwitch`), so it offers to record in FreeFlow.
+        static let captureUnavailable = "FreeFlowUITestCaptureUnavailable"
         /// Sets the App Group string `ios_debug_keyboard_state`, which a DEBUG
         /// simulator keyboard displays instead of its live state so UI tests
         /// can screenshot every state, e.g. `recording:hold` or
@@ -65,6 +69,7 @@ enum FreeFlowUITestHooks {
         FreeFlowAppSettingKey.onboardingStep,
         FreeFlowAppSettingKey.customSystemPromptLastModified,
         FreeFlowAppSettingKey.debugSyntheticCapture,
+        WebAudioCaptureUITestSwitch.defaultsKey,
         // Store keys from DESIGN §6.2 and §6.3.
         "ios_pending_dictation",
         "ios_awaited_dictation_session",
@@ -126,6 +131,9 @@ enum FreeFlowUITestHooks {
         }
         if let synthetic = boolValue(arguments[Argument.syntheticCapture]) {
             settings.set(synthetic, for: FreeFlowAppSettingKey.debugSyntheticCapture)
+        }
+        if let unavailable = boolValue(arguments[Argument.captureUnavailable]) {
+            settings.set(unavailable, for: WebAudioCaptureUITestSwitch.defaultsKey)
         }
         if let keyboardState = stringValue(arguments[Argument.keyboardState]) {
             if keyboardState.lowercased() == "live" {

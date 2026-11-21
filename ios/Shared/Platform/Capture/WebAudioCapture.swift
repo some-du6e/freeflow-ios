@@ -201,6 +201,14 @@ final class WebAudioCapture: NSObject {
             Self.log.info("Capture start ignored: a capture is already running")
             return
         }
+        #if DEBUG
+        // UI tests reach the keyboard's fallback through this (WebAudioCaptureUITestSwitch).
+        if WebAudioCaptureUITestSwitch.isOn() {
+            Self.log.info("Capture start failed: capture is switched off for UI tests")
+            delegate?.webAudioCapture(self, didFail: WebAudioCaptureUITestSwitch.failure)
+            return
+        }
+        #endif
         guard isAttached, webView.window != nil else {
             Self.log.error("Capture start failed: the page is not in a window")
             delegate?.webAudioCapture(self, didFail: .pageUnavailable)
