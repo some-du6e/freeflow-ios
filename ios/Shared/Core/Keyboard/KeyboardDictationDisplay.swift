@@ -127,6 +127,8 @@ extension KeyboardDictationDisplay {
             return "Inserted your last dictation"
         case .handoff:
             return "Inserted from FreeFlow"
+        case .handoffWithoutReturn:
+            return "Inserted from FreeFlow. Return wasn't pressed."
         }
     }
 
@@ -138,6 +140,8 @@ extension KeyboardDictationDisplay {
             return "No audio was recorded"
         case .noHistory:
             return "Nothing to insert yet"
+        case .returnNotPressed:
+            return "Return wasn't pressed, since this may be a different field."
         }
     }
 

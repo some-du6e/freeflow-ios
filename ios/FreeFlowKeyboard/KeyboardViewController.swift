@@ -362,8 +362,9 @@ final class KeyboardViewController: UIInputViewController {
         case .openApp(let sessionID):
             openContainingApp(sessionID: sessionID)
         case .stopAwaitingApp:
+            // Without Full Access the App Group is read-only to the keyboard.
             if hasFullAccess {
-                PendingDictationStore.shared.awaitedSessionID = nil
+                KeyboardHandoffCheck.stopAwaiting(PendingDictationStore.shared)
             }
         case .checkForAppResult:
             checkForAppResult()
@@ -529,23 +530,17 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// Picks up a result the app recorded for this keyboard, if one is waiting.
+    /// Picks up a result the app recorded for this keyboard, if one is
+    /// waiting. `KeyboardHandoffCheck` decides what the store's contents
+    /// mean, including discarding a result nobody awaits.
     private func checkForAppResult() {
         guard hasFullAccess, !machine.isBusy else { return }
-        let store = PendingDictationStore.shared
-        guard let sessionID = store.awaitedSessionID else {
-            send(.handoffAbsent)
-            return
-        }
-        if let pending = store.take(sessionID: sessionID, now: Date()) {
-            send(.handoffResultArrived(
-                pending,
-                expectedDocumentID: handoffLedger.documentID(sessionID: sessionID),
-                document: currentDocument()
-            ))
-        } else {
-            send(.handoffPending(sessionID: sessionID, openedAt: handoffLedger.openedAt(sessionID: sessionID)))
-        }
+        send(KeyboardHandoffCheck.check(
+            PendingDictationStore.shared,
+            ledger: handoffLedger,
+            now: Date(),
+            document: currentDocument()
+        ))
     }
 
     // MARK: DEBUG screenshot states

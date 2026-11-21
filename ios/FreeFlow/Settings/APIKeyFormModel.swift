@@ -117,8 +117,16 @@ final class APIKeyFormModel: ObservableObject {
             presentIfNeeded()
         }
         let submission = draft.submission
-        status = .validating
         successful = nil
+        // The check against GET /models accepts a base URL with a query or
+        // fragment, but the pipeline can't build a cleanup URL from one and
+        // would quietly skip cleanup and translation. Refuse it here, before
+        // the key is sent anywhere, and store nothing.
+        guard Self.pipelineAcceptsBaseURL(submission.configuration.baseURL) else {
+            status = .failed(Self.validationFailedMessage)
+            return false
+        }
+        status = .validating
 
         var accepted: ValidatedAPIConfiguration?
         var storeFailed = false
@@ -157,6 +165,15 @@ final class APIKeyFormModel: ObservableObject {
             status = .idle
         }
         return false
+    }
+
+    /// Resolves the base URL as `APIConfigurationSaveFlow.validateAndApply`
+    /// does (trimmed, the default when blank), then applies the cleanup
+    /// pipeline's rules: http or https, a host, no query and no fragment.
+    private static func pipelineAcceptsBaseURL(_ baseURL: String) -> Bool {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? APIConfigurationSaveFlow.defaultBaseURL : trimmed
+        return DictationPipeline.validatedLLMBaseURL(resolved) != nil
     }
 
     /// Keys go to the shared keychain (a blank value deletes the item); a

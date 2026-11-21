@@ -14,9 +14,7 @@ struct SettingsScreen: View {
     @State private var isConfirmingRerun = false
 
     init(environment: FreeFlowAppEnvironment) {
-        _model = StateObject(wrappedValue: SettingsScreenModel(settings: environment.settings) {
-            environment.history.clear()
-        })
+        _model = StateObject(wrappedValue: SettingsScreenModel(environment: environment))
         _apiForm = StateObject(wrappedValue: APIKeyFormModel(environment: environment))
     }
 
@@ -54,7 +52,7 @@ struct SettingsScreen: View {
         }
         .confirmationDialog("Clear all history?", isPresented: $isConfirmingClearHistory, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) {
-                app.environment.history.clear()
+                app.clearHistory()
             }
             Button("Cancel", role: .cancel) {}
         } message: {

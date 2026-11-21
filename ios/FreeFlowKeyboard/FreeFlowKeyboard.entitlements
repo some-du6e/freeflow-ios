@@ -8,7 +8,7 @@
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)$(FREEFLOW_BUNDLE_ID_PREFIX).shared</string>
+		<string>$(FREEFLOW_KEYCHAIN_GROUP_PREFIX)$(FREEFLOW_BUNDLE_ID_PREFIX).shared</string>
 	</array>
 </dict>
 </plist>

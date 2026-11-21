@@ -61,11 +61,20 @@ final class FreeFlowAppModel: ObservableObject {
     let environment: FreeFlowAppEnvironment
     private let microphoneFlagIsOverridden: Bool
 
+    /// `handle(url:)` reads the awaited session up to this many more times,
+    /// pausing between reads (about 1 s in all), because the keyboard's App
+    /// Group write may not have reached the app yet. Tests shorten the pause.
+    var awaitedSessionRereads = 10
+    var pauseBeforeRereadingAwaitedSession: @MainActor () async -> Void = {
+        _ = try? await Task.sleep(for: .milliseconds(100))
+    }
+
     init(environment: FreeFlowAppEnvironment, microphoneFlagIsOverridden: Bool = false) {
         self.environment = environment
         self.microphoneFlagIsOverridden = microphoneFlagIsOverridden
         self.hasCompletedSetup = environment.settings.hasCompletedSetup
         syncMicrophoneFlag()
+        discardUnclaimedHandoffResult()
     }
 
     // MARK: Setup
@@ -108,6 +117,7 @@ final class FreeFlowAppModel: ObservableObject {
 
     func sceneBecameActive() {
         syncMicrophoneFlag()
+        discardUnclaimedHandoffResult()
         refreshGeneration += 1
     }
 
@@ -115,38 +125,83 @@ final class FreeFlowAppModel: ObservableObject {
         activeRecorder?.appDidEnterBackground()
     }
 
+    /// Removes a handed-off result no keyboard can still take, so its text
+    /// doesn't stay in the App Group.
+    private func discardUnclaimedHandoffResult() {
+        environment.pendingDictations.discardUnclaimedResult(now: Date())
+    }
+
     // MARK: URLs and the recorder
 
-    func handle(url: URL) {
+    /// `freeflow://dictate`. Any app can open it, so it records on its own
+    /// only for the session the keyboard wrote to the App Group before
+    /// opening it (only FreeFlow's own processes can). Anything else (no
+    /// session, or one the keyboard isn't waiting for) opens the recorder
+    /// idle, and it records only after a tap on Start.
+    func handle(url: URL) async {
         guard let route = FreeFlowURLRoute(url: url) else { return }
         switch route {
         case .dictate(let sessionID):
-            startDictation(mode: sessionID.map { RecorderMode.handoff(sessionID: $0) } ?? .inApp)
+            guard let sessionID else {
+                openRecorder(mode: .inApp, startsOnAppear: false)
+                return
+            }
+            let isAwaited = await keyboardAwaits(sessionID)
+            openRecorder(mode: .handoff(sessionID: sessionID), startsOnAppear: isAwaited)
         }
     }
 
-    /// Opens the recorder. A recorder that is still busy keeps going; if the
-    /// keyboard asked again with a new session, the result goes to that one.
+    /// Whether the keyboard waits for `sessionID`, re-reading briefly in case
+    /// its App Group write is still on its way.
+    private func keyboardAwaits(_ sessionID: UUID) async -> Bool {
+        if environment.pendingDictations.awaitedSessionID == sessionID {
+            return true
+        }
+        for _ in 0..<awaitedSessionRereads {
+            await pauseBeforeRereadingAwaitedSession()
+            if environment.pendingDictations.awaitedSessionID == sessionID {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Opens the recorder for a tap in FreeFlow ("Dictate Without the
+    /// Keyboard", Try Again), so it records at once. Keyboard handoffs come
+    /// through `handle(url:)`, which checks the session first.
     func startDictation(mode: RecorderMode) {
-        if let current = activeRecorder, current.isBusy {
-            if case .handoff(let sessionID) = mode {
-                current.adoptHandoffSession(sessionID)
+        openRecorder(mode: mode, startsOnAppear: true)
+    }
+
+    /// For a handoff, `startsOnAppear` is true only for the session the
+    /// keyboard awaits; nothing else may start a recording or replace a
+    /// busy recorder.
+    private func openRecorder(mode: RecorderMode, startsOnAppear: Bool) {
+        // The keyboard reopened the app for the session this recorder already
+        // serves. Keep it: closing it would clear the session the keyboard is
+        // waiting on. If the keyboard still waits for it, a recorder waiting
+        // for a tap starts and a failed recording gets another try.
+        if let current = activeRecorder, let sessionID = mode.sessionID, current.mode.sessionID == sessionID {
+            if startsOnAppear {
+                current.resumeForAwaitedSession()
             }
             return
         }
-        // The keyboard reopened the app for the session this recorder already
-        // serves. Keep it: closing it would clear the session the keyboard is
-        // waiting on. A failed recording gets another try.
-        if let current = activeRecorder, let sessionID = mode.sessionID, current.mode.sessionID == sessionID {
-            if case .failed = current.phase {
-                current.retry()
-            }
-            return
+        if activeRecorder?.isBusy == true {
+            // A busy recorder keeps going unless the keyboard now awaits a
+            // different session. The keyboard awaits one session at a time,
+            // so it has given up on what this recorder holds: a test-field
+            // dictation, or audio for another session, maybe from another
+            // field. Handing that to the new session could insert it (and
+            // press return) in the wrong field, so it is dropped and the new
+            // session gets a recording of its own.
+            guard startsOnAppear, mode.sessionID != nil else { return }
         }
         activeRecorder?.close()
         let recorder = RecorderModel(
             mode: mode,
-            dependencies: environment.makeRecorderDependencies(environment)
+            dependencies: environment.makeRecorderDependencies(environment),
+            startsOnAppear: startsOnAppear
         )
         recorder.onInsertIntoTestField = { [weak self] text, pressEnter in
             self?.insertIntoTestField(text, pressEnter: pressEnter)
@@ -171,6 +226,22 @@ final class FreeFlowAppModel: ObservableObject {
         if hasCompletedSetup {
             selectedTab = .settings
         }
+    }
+
+    /// Leaves a recorder that can't record without the data-sharing consent
+    /// (`RecorderPhase.consentNeeded`) for setup, where the consent page comes
+    /// right after Welcome. A finished setup starts over from Welcome,
+    /// keeping every setting, like Re-run Setup.
+    func closeRecorderAndReturnToSetup() {
+        closeRecorder()
+        if hasCompletedSetup {
+            rerunSetup()
+        }
+    }
+
+    /// Both Clear History buttons (Settings and History).
+    func clearHistory() {
+        environment.clearHistory()
     }
 
     /// Appends a dictation the way the keyboard inserts one: spacing from

@@ -21,6 +21,7 @@ enum IOSSharedCoreTests {
         testInsertionLeadingSpace()
         testValidatedLLMBaseURL()
         testHistoryEntryFromResult()
+        testHistoryDecodesEntriesWithoutTheFallbackFlag()
         testUserFacingMessages()
 
         await testEmptyTranscriptSkipsProviders()
@@ -417,6 +418,60 @@ enum IOSSharedCoreTests {
         TestSupport.expectEqual(HistoryEntry(result: fallback, source: .keyboard, createdAt: createdAt, durationSeconds: 1).status, .rawFallback)
         TestSupport.expectEqual(HistoryEntry(result: empty, source: .keyboard, createdAt: createdAt, durationSeconds: 1).status, .nothingToInsert)
         TestSupport.expectEqual(HistoryEntry(result: cleaned, source: .app, status: .handedOff, createdAt: createdAt, durationSeconds: 1).status, .handedOff)
+
+        // The fallback is kept even when the status can't show it (a handed-off
+        // translation that fell back), so History can label the raw text.
+        TestSupport.expectEqual(entry.usedRawFallback, nil)
+        TestSupport.expect(!entry.fellBackToRawTranscript, "A cleaned-up entry is not a raw fallback")
+        let handedOffFallback = HistoryEntry(result: fallback, source: .app, status: .handedOff, createdAt: createdAt, durationSeconds: 1)
+        TestSupport.expectEqual(handedOffFallback.usedRawFallback, true)
+        TestSupport.expect(handedOffFallback.fellBackToRawTranscript, "A handed-off raw fallback must say so")
+        let legacyRawFallback = HistoryEntry(createdAt: createdAt, source: .keyboard, status: .rawFallback, rawTranscript: "raw", text: "raw", route: .cleanup, durationSeconds: 1)
+        TestSupport.expect(legacyRawFallback.fellBackToRawTranscript, "An entry from before the flag still says so through its status")
+
+        // One rule for the keyboard and the app's recorder: return alone, or
+        // whitespace, inserts no text.
+        let returnOnly = DictationResult(rawTranscript: "", text: "", pressEnter: true, route: .empty, usedRawFallback: false)
+        let whitespace = DictationResult(rawTranscript: " ", text: " \n", pressEnter: true, route: .cleanup, usedRawFallback: true)
+        TestSupport.expectEqual(HistoryEntry.Status.forInsertion(of: returnOnly), .nothingToInsert)
+        TestSupport.expectEqual(HistoryEntry.Status.forInsertion(of: whitespace), .nothingToInsert)
+        TestSupport.expectEqual(HistoryEntry.Status.forInsertion(of: cleaned), .inserted)
+        TestSupport.expectEqual(HistoryEntry.Status.forInsertion(of: fallback), .rawFallback)
+    }
+
+    private static func testHistoryDecodesEntriesWithoutTheFallbackFlag() {
+        // A history file from before `usedRawFallback` existed (synthetic).
+        let legacy = Data("""
+        [{"createdAt":"2027-01-15T08:00:00Z","durationSeconds":2,"id":"41570000-0000-4000-8000-000000000001",\
+        "rawTranscript":"synthetic raw","route":"cleanup","source":"keyboard","status":"rawFallback","text":"synthetic raw"},\
+        {"createdAt":"2027-01-15T07:00:00Z","durationSeconds":1,"id":"41570000-0000-4000-8000-000000000002",\
+        "rawTranscript":"older words","route":"cleanup","source":"app","status":"inserted","text":"Older words."}]
+        """.utf8)
+        let decoded = HistoryLog.decode(legacy)
+        TestSupport.expectEqual(decoded.count, 2)
+        TestSupport.expectEqual(decoded.first?.usedRawFallback, nil)
+        TestSupport.expectEqual(decoded.first?.fellBackToRawTranscript, true)
+        TestSupport.expectEqual(decoded.last?.text, "Older words.")
+        TestSupport.expectEqual(decoded.last?.fellBackToRawTranscript, false)
+
+        // The flag round-trips, and entries without it encode without the key.
+        let flagged = HistoryEntry(
+            createdAt: Date(timeIntervalSince1970: 1_800_000_100),
+            source: .app,
+            status: .handedOff,
+            rawTranscript: "synthetic raw",
+            text: "synthetic raw",
+            route: .translation,
+            usedRawFallback: true,
+            durationSeconds: 2
+        )
+        let entries = HistoryLog.appending(flagged, to: decoded)
+        guard let data = try? HistoryLog.encode(entries), let json = String(data: data, encoding: .utf8) else {
+            TestSupport.expect(false, "History must encode")
+            return
+        }
+        TestSupport.expectEqual(HistoryLog.decode(data), entries)
+        TestSupport.expectEqual(json.components(separatedBy: "\"usedRawFallback\"").count - 1, 1)
     }
 
     private static func testUserFacingMessages() {

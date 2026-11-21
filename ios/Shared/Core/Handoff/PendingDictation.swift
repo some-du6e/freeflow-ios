@@ -17,6 +17,18 @@ struct PendingDictation: Codable, Equatable {
     }
 }
 
+/// What `PendingDictationStore.take(sessionID:now:)` found for a session.
+/// A fresh or expired result is removed from the store either way.
+enum PendingDictationTake: Equatable {
+    /// Young enough to insert.
+    case fresh(PendingDictation)
+    /// Older than `PendingDictation.maxAge`. The keyboard stops waiting and
+    /// says the result expired instead of inserting it.
+    case expired(PendingDictation)
+    /// Nothing for this session yet.
+    case none
+}
+
 /// What the keyboard last reported about itself, so the containing app can
 /// show setup status. Written only when the keyboard has Full Access (without
 /// it the App Group is read-only to the keyboard). Contains no user content.

@@ -9,8 +9,8 @@ import Foundation
 /// after a colon:
 /// - `setup-needed:fullAccess|microphone|apiKey` (default fullAccess)
 /// - `recording:hold|tap` (default tap)
-/// - `inserted:dictation|rawFallback|returnOnly|lastDictation|handoff`
-/// - `nothing-to-insert:emptyTranscript|noAudio|noHistory`
+/// - `inserted:dictation|rawFallback|returnOnly|lastDictation|handoff|handoffWithoutReturn`
+/// - `nothing-to-insert:emptyTranscript|noAudio|noHistory|returnNotPressed`
 /// - `error:<message>` (default a synthetic timeout message)
 /// - `fallback-available:captureUnavailable|lowMemory|openFailed`
 enum KeyboardDebugDisplayState {
