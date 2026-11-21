@@ -52,6 +52,7 @@ enum IOSKeyboardCoreTests {
         testInsertLastPrefersTheNewestSource()
         testRememberedTextCoversHistoryOff()
         testHandoffLedger()
+        testReopeningFromAnotherFieldNeverAutoInserts()
         testHandoffCheckReadsTheStore()
         testDisappearingCancelsCapture()
         testHapticsNeedFullAccess()
@@ -1467,6 +1468,58 @@ enum IOSKeyboardCoreTests {
 
         let reopened = KeyboardHandoffLedger(defaults: defaults)
         TestSupport.expectEqual(reopened.openedAt(sessionID: sessionTwo), at(50))
+
+        // Opening again for the same session from the same field keeps the
+        // field and renews the open time.
+        ledger.recordOpen(sessionID: sessionThree, documentID: fieldA, at: at(60))
+        ledger.recordOpen(sessionID: sessionThree, documentID: fieldA, at: at(70))
+        TestSupport.expectEqual(ledger.documentID(sessionID: sessionThree), fieldA)
+        TestSupport.expectEqual(ledger.openedAt(sessionID: sessionThree), at(70))
+
+        // From another field, the session can't be tied to either field, and
+        // it stays untied back in the first one.
+        ledger.recordOpen(sessionID: sessionThree, documentID: fieldB, at: at(80))
+        TestSupport.expect(ledger.documentID(sessionID: sessionThree) == nil, "A session opened from two fields has no field")
+        TestSupport.expectEqual(ledger.openedAt(sessionID: sessionThree), at(80))
+        ledger.recordOpen(sessionID: sessionThree, documentID: fieldA, at: at(90))
+        TestSupport.expect(ledger.documentID(sessionID: sessionThree) == nil, "Back in the first field it stays untied")
+
+        // A second open from an unknown field unties it too.
+        ledger.recordOpen(sessionID: sessionOne, documentID: fieldA, at: at(100))
+        ledger.recordOpen(sessionID: sessionOne, documentID: nil, at: at(110))
+        TestSupport.expect(ledger.documentID(sessionID: sessionOne) == nil, "An unknown second field unties it")
+
+        // A new session starts with its own field.
+        ledger.recordOpen(sessionID: sessionTwo, documentID: fieldB, at: at(120))
+        TestSupport.expectEqual(ledger.documentID(sessionID: sessionTwo), fieldB)
+    }
+
+    private static func testReopeningFromAnotherFieldNeverAutoInserts() {
+        // Opened from field A, then again for the same session from field B
+        // while FreeFlow was still processing, so nothing new was recorded:
+        // the result can't be tied to either field, so neither gets it
+        // inserted, or return pressed, on its own. Insert from FreeFlow
+        // offers it in both.
+        let suite = "FreeFlowTests.IOSKeyboardCore.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            TestSupport.expect(false, "A test defaults suite must open")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let ledger = KeyboardHandoffLedger(defaults: defaults)
+        ledger.recordOpen(sessionID: sessionOne, documentID: fieldA, at: at(0))
+        ledger.recordOpen(sessionID: sessionOne, documentID: fieldB, at: at(15))
+
+        let pending = PendingDictation(sessionID: sessionOne, createdAt: at(18), text: "Running late.", pressEnter: true)
+        for field in [fieldA, fieldB] {
+            let store = SyntheticHandoffStore(awaited: sessionOne, take: .fresh(pending))
+            let event = KeyboardHandoffCheck.check(store, ledger: ledger, now: at(20), document: document(field))
+            TestSupport.expectEqual(event, .handoffResultArrived(pending, expectedDocumentID: nil, document: document(field)))
+            var machine = readyMachine()
+            let effects = machine.handle(event, now: at(20))
+            TestSupport.expectEqual(insertions(effects), [])
+            TestSupport.expectEqual(status(machine), .pendingInsert)
+        }
     }
 
     private static func testHandoffCheckReadsTheStore() {

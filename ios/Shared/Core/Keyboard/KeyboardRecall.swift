@@ -43,10 +43,16 @@ struct KeyboardHandoffLedger {
 
     let defaults: UserDefaults
 
+    /// Opening FreeFlow again for the session the keyboard already waits on,
+    /// from another field (or one whose identifier is unknown), forgets the
+    /// field: the dictation can no longer be tied to one field, so its result
+    /// is only ever offered with Insert from FreeFlow, never auto-inserted
+    /// with return in the field of the second open.
     func recordOpen(sessionID: UUID, documentID: UUID?, at date: Date) {
+        let openedElsewhere = isCurrent(sessionID) && storedDocumentID != documentID
         defaults.set(sessionID.uuidString, forKey: Self.sessionKey)
         defaults.set(date.timeIntervalSinceReferenceDate, forKey: Self.openedAtKey)
-        if let documentID {
+        if let documentID, !openedElsewhere {
             defaults.set(documentID.uuidString, forKey: Self.documentKey)
         } else {
             defaults.removeObject(forKey: Self.documentKey)
@@ -65,7 +71,11 @@ struct KeyboardHandoffLedger {
     /// or nil if unknown or the session doesn't match.
     func documentID(sessionID: UUID) -> UUID? {
         guard isCurrent(sessionID) else { return nil }
-        return defaults.string(forKey: Self.documentKey).flatMap(UUID.init(uuidString:))
+        return storedDocumentID
+    }
+
+    private var storedDocumentID: UUID? {
+        defaults.string(forKey: Self.documentKey).flatMap(UUID.init(uuidString:))
     }
 
     private func isCurrent(_ sessionID: UUID) -> Bool {

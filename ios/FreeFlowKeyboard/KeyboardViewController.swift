@@ -529,8 +529,11 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: Open-the-app fallback
 
     private func openContainingApp(sessionID: UUID) {
-        PendingDictationStore.shared.awaitedSessionID = sessionID
+        // The ledger first: a process stopped between the two writes then
+        // leaves no awaited session without an open time, which every new
+        // keyboard would wait on from its own start.
         handoffLedger.recordOpen(sessionID: sessionID, documentID: textDocumentProxy.documentIdentifier, at: Date())
+        PendingDictationStore.shared.awaitedSessionID = sessionID
         // Start from the view iOS put in the keyboard window; its responder
         // chain ends at the extension's UIApplication.
         let responder: UIResponder
