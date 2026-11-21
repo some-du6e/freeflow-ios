@@ -216,6 +216,45 @@ for name, path, bundle_id in bundles:
 check(len(set(versions.values())) == 1,
       f"the app and keyboard versions differ: {versions!r}; App Store Connect expects them to match")
 
+
+def leaves(value, path=""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from leaves(child, f"{path}.{key}" if path else str(key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from leaves(child, f"{path}[{index}]")
+    else:
+        yield path, value
+
+
+if mode == "ipa":
+    # Information only. Apple doesn't document how an export made with
+    # testFlightInternalTestingOnly marks the IPA, so show any plist entry that
+    # mentions it. App Store Connect shows the result under the build number.
+    root = os.path.dirname(os.path.dirname(app))
+    print("::group::IPA contents and internal-testing markers")
+    print("top level: " + ", ".join(sorted(os.listdir(root))))
+    found = 0
+    for directory, _, filenames in os.walk(root):
+        for filename in filenames:
+            if not filename.endswith(".plist"):
+                continue
+            plist_path = os.path.join(directory, filename)
+            try:
+                with open(plist_path, "rb") as handle:
+                    data = plistlib.load(handle)
+            except Exception:
+                continue
+            for key_path, value in leaves(data):
+                text = f"{key_path} {value}".lower()
+                if "internal" in text or "testflight" in text:
+                    print(f"{os.path.relpath(plist_path, root)}: {key_path} = {value!r}")
+                    found += 1
+    if not found:
+        print("No plist entry mentions internal testing or TestFlight.")
+    print("::endgroup::")
+
 step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
 if step_summary:
     with open(step_summary, "a", encoding="utf-8") as handle:
