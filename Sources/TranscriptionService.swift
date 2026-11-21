@@ -191,7 +191,7 @@ class TranscriptionService {
             os_log(
                 .error,
                 log: transcriptionLog,
-                "URLSession upload failed for %{public}@ (bytes=%{public}lld): domain=%{public}@ code=%ld desc=%{public}@",
+                "URLSession upload failed for %{public}@ (bytes=%{public}lld): domain=%{public}@ code=%ld desc=%{private}@",
                 fileURL.lastPathComponent,
                 fileSizeBytes(for: fileURL),
                 nsError.domain,
@@ -208,15 +208,16 @@ class TranscriptionService {
         }
 
         guard httpResponse.statusCode == 200 else {
-            let responseBody = String(data: data, encoding: .utf8) ?? ""
+            // Only the body's size: provider error bodies can echo part of the API key,
+            // account IDs or internal hostnames.
             os_log(
                 .error,
                 log: transcriptionLog,
-                "URLSession upload returned HTTP %ld for %{public}@ (bytes=%{public}lld) body=%{public}@",
+                "URLSession upload returned HTTP %ld for %{public}@ (bytes=%{public}lld) responseBytes=%ld",
                 httpResponse.statusCode,
                 fileURL.lastPathComponent,
                 fileSizeBytes(for: fileURL),
-                responseBody
+                data.count
             )
             throw TranscriptionError.submissionFailed(Self.friendlyHTTPMessage(
                 status: httpResponse.statusCode,
