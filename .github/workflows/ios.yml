@@ -139,15 +139,21 @@ jobs:
           exit 1
 
       - name: Test
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           mkdir -p "$DIAGNOSTICS_PATH"
+          test_log="$DIAGNOSTICS_PATH/xcodebuild-test.log"
           # The keyboard's own log, streamed live because the simulator
           # doesn't keep info-level lines for later. It holds state names,
-          # capture events, counts and rates, never text or audio.
-          xcrun simctl spawn "$SIMULATOR_UDID" log stream --level info --style compact \
-            --predicate "subsystem == \"$FREEFLOW_KEYBOARD_ID\"" \
-            < /dev/null > "$DIAGNOSTICS_PATH/keyboard.log" 2>&1 &
+          # capture events, counts and rates, never text or audio. It starts
+          # when the UI tests do, so it adds no load to the unit tests.
+          (
+            until grep -q "Test Suite 'FreeFlowUITests.xctest' started" "$test_log" 2>/dev/null; do
+              sleep 2
+            done
+            exec xcrun simctl spawn "$SIMULATOR_UDID" log stream --level info --style compact \
+              --predicate "subsystem == \"$FREEFLOW_KEYBOARD_ID\""
+          ) < /dev/null > "$DIAGNOSTICS_PATH/keyboard.log" 2>&1 &
           echo "KEYBOARD_LOG_PID=$!" >> "$GITHUB_ENV"
           xcodebuild test-without-building \
             -project ios/FreeFlow.xcodeproj \
@@ -161,7 +167,7 @@ jobs:
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 180 \
             -maximum-test-execution-time-allowance 420 \
-            2>&1 | tee "$DIAGNOSTICS_PATH/xcodebuild-test.log"
+            2>&1 | tee "$test_log"
 
       - name: Report the UI tests' findings
         if: always()
