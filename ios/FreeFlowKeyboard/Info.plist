@@ -23,7 +23,7 @@
 	<key>FreeFlowAppGroupIdentifier</key>
 	<string>group.$(FREEFLOW_BUNDLE_ID_PREFIX)</string>
 	<key>FreeFlowKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)$(FREEFLOW_BUNDLE_ID_PREFIX).shared</string>
+	<string>$(FREEFLOW_KEYCHAIN_GROUP_PREFIX)$(FREEFLOW_BUNDLE_ID_PREFIX).shared</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>FreeFlow needs microphone access to transcribe your speech.</string>
 	<key>NSAppTransportSecurity</key>

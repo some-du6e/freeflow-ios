@@ -13,6 +13,16 @@
 // shared keychain access group is "<team prefix><prefix>.shared".
 FREEFLOW_BUNDLE_ID_PREFIX = com.zachlatta.freeflow.ios
 
+// The "<team prefix>" of the shared keychain access group, including its
+// trailing dot. Both entitlements files and both Info.plists use it. Xcode
+// fills in $(AppIdentifierPrefix) when it signs: the prefix from the
+// provisioning profile, "<DEVELOPMENT_TEAM>." for an ad-hoc device archive,
+// or "FAKETEAMID." when no team is set, as in simulator CI. The TestFlight
+// workflow (.github/workflows/ios-testflight.yml) sets this to "<team ID>."
+// on the command line, so its archive doesn't depend on what ad-hoc signing
+// picks.
+FREEFLOW_KEYCHAIN_GROUP_PREFIX = $(AppIdentifierPrefix)
+
 IPHONEOS_DEPLOYMENT_TARGET = 17.0
 TARGETED_DEVICE_FAMILY = 1
 SWIFT_VERSION = 5.0
