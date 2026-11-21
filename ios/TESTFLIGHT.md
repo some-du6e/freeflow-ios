@@ -247,7 +247,7 @@ last. The workflow uses the run number, and a re-run of the same run gets
 upload from Xcode used a bigger number:
 
 ```sh
-gh workflow run ios-testflight.yml --ref ios-port -f build_number=500
+gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref ios-port -f build_number=500
 ```
 
 The version string, now 0.1.0, is `MARKETING_VERSION` in
@@ -257,14 +257,13 @@ build number.
 ### Dry run
 
 ```sh
-gh workflow run ios-testflight.yml --ref ios-port -f dry_run=true
+gh workflow run ios-testflight.yml --repo some-du6e/freeflow-ios --ref ios-port -f dry_run=true
 ```
 
 A dry run archives with a made-up team, `ABCDE12345`, and checks the archive.
 It uses no secrets and no environment, so it needs no approval and uploads
 nothing. It finds Release-only compile errors and broken entitlements before
-you spend an approval. While `ios-wip/testflight` exists, every push to it
-runs a dry run too.
+you spend an approval.
 
 ## What the workflow checks
 
@@ -310,8 +309,9 @@ certificate.
 misspelled, or saved under the repository's Actions secrets instead of the
 `testflight` environment.
 
-The run fails right away without asking for approval. The run's branch isn't
-in the environment's deployment branches.
+The upload job fails before asking for approval, with an error that the
+branch may not deploy to `testflight`. Add the branch to the environment's
+deployment branches, or run from a branch that is listed.
 
 "Cloud signing permission error" during export. The API key isn't an Admin
 key. Generate an Admin key and replace the three secrets.
@@ -435,3 +435,6 @@ Apple:
 
 GitHub:
 - Managing environments for deployment: <https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments>
+- Deployment branch and protection options: <https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments>
+- Reviewing deployments: <https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments>
+- Manually running a workflow: <https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow>

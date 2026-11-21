@@ -51,8 +51,10 @@ settings=(
   AD_HOC_CODE_SIGNING_ALLOWED=YES
   DEVELOPMENT_TEAM="$team_id"
   FREEFLOW_BUNDLE_ID_PREFIX="$bundle_id_prefix"
-  # Ad-hoc signing has no provisioning profile to take the team prefix from,
-  # so pass it for the keychain access group. See ios/Config/FreeFlow.xcconfig.
+  # The keychain access group's team prefix. Xcode 26.6 derives the same
+  # value from DEVELOPMENT_TEAM for ad-hoc device builds, but that is
+  # undocumented, and with no team it writes FAKETEAMID. See
+  # ios/Config/FreeFlow.xcconfig.
   FREEFLOW_KEYCHAIN_GROUP_PREFIX="$team_id."
   CURRENT_PROJECT_VERSION="$build_number"
 )

@@ -23,12 +23,6 @@ on:
         type: string
         required: false
         default: ""
-  # Registers the workflow with GitHub Actions and runs the dry run while the
-  # TestFlight work is in progress. A workflow file that isn't on the default
-  # branch can only be started with `gh workflow run` after it has run once.
-  push:
-    branches:
-      - ios-wip/testflight
 
 permissions:
   contents: read
@@ -39,7 +33,7 @@ jobs:
   # means no certificate, provisioning profile, or Apple account is involved.
   dry-run:
     name: Dry run (placeholder team, no secrets)
-    if: github.event_name == 'push' || inputs.dry_run
+    if: inputs.dry_run
     runs-on: macos-26
     timeout-minutes: 30
     concurrency:
@@ -77,36 +71,14 @@ jobs:
       - name: Check the export options
         run: .github/scripts/ios-testflight-export-options.sh "$RUNNER_TEMP/testflight/ExportOptions.plist" "$TEAM_ID"
 
-      # TEMPORARY, removed before merge. Shows what an ad-hoc device archive
-      # gets from $(AppIdentifierPrefix) when nothing overrides
-      # FREEFLOW_KEYCHAIN_GROUP_PREFIX.
-      - name: "Evidence: archive without the keychain prefix override"
-        continue-on-error: true
-        run: |
-          out="$RUNNER_TEMP/no-override"
-          xcodebuild archive -quiet \
-            -project ios/FreeFlow.xcodeproj -scheme FreeFlow -configuration Release \
-            -destination "generic/platform=iOS" \
-            -archivePath "$out/FreeFlow.xcarchive" -derivedDataPath "$out/DerivedData" \
-            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM="$TEAM_ID" FREEFLOW_BUNDLE_ID_PREFIX="$BUNDLE_ID_PREFIX" \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
-          app="$out/FreeFlow.xcarchive/Products/Applications/FreeFlow.app"
-          for bundle in "$app" "$app/PlugIns/FreeFlowKeyboard.appex"; do
-            echo "== $(basename "$bundle")"
-            codesign -d --entitlements - --xml "$bundle" > "$out/entitlements.plist" 2> /dev/null
-            plutil -p "$out/entitlements.plist"
-            echo "FreeFlowKeychainAccessGroup = $(plutil -extract FreeFlowKeychainAccessGroup raw -o - "$bundle/Info.plist")"
-          done
-
   testflight:
     name: Archive, sign, and upload to TestFlight
     if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
     runs-on: macos-26
     timeout-minutes: 60
-    # Always "testflight" when this job runs. Push runs and dry runs skip the
-    # job, and the expression keeps them from naming the environment at all,
-    # because running a workflow that names a missing environment creates it.
+    # Always "testflight" when this job runs. Dry runs skip the job, and the
+    # expression keeps them from naming the environment at all, because
+    # running a workflow that names a missing environment creates it.
     environment: ${{ (github.event_name == 'workflow_dispatch' && !inputs.dry_run) && 'testflight' || '' }}
     # One upload at a time, and never cancel one that has started.
     concurrency:
