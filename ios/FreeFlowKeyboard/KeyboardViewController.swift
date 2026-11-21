@@ -20,6 +20,12 @@ final class KeyboardViewController: UIInputViewController {
     /// One capture per keyboard process. Its web view stays loaded between
     /// dictations and moves to whichever controller is on screen.
     private static var processCapture: WebAudioCapture?
+    /// For the handoff log: how long this process has run, and how many
+    /// controllers it has loaded, since a long-lived process misread the
+    /// App Group in CI.
+    private static let processStartedAt = Date()
+    private static var controllersLoaded = 0
+    private var controllerNumber = 0
     /// This process's latest result for Insert last. In memory only.
     private static var rememberedText: KeyboardRememberedText?
 
@@ -66,6 +72,9 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        _ = Self.processStartedAt
+        Self.controllersLoaded += 1
+        controllerNumber = Self.controllersLoaded
         // A clear, non-opaque root lets the system keyboard backdrop show,
         // including while iOS stretches the view during its entry animation.
         let root = KeyboardInputView(frame: .zero, inputViewStyle: .keyboard)
@@ -368,7 +377,8 @@ final class KeyboardViewController: UIInputViewController {
         case .stopAwaitingApp:
             // Without Full Access the App Group is read-only to the keyboard.
             if hasFullAccess {
-                KeyboardHandoffCheck.stopAwaiting(PendingDictationStore.shared)
+                let removed = KeyboardHandoffCheck.stopAwaiting(PendingDictationStore.shared, now: Date())
+                keyboardLog.info("stopped waiting for FreeFlow; removed a result: \(removed, privacy: .public)")
             }
         case .checkForAppResult:
             checkForAppResult()
@@ -536,16 +546,49 @@ final class KeyboardViewController: UIInputViewController {
 
     /// Picks up a result the app recorded for this keyboard, if one is
     /// waiting. `KeyboardHandoffCheck` decides what the store's contents
-    /// mean, including discarding a result nobody awaits.
+    /// mean, including when a result nobody seems to await may be removed
+    /// (only once it can never be inserted). Each check is logged without
+    /// content, to tell a stale App Group read from a real absence.
     private func checkForAppResult() {
-        guard hasFullAccess, !machine.isBusy else { return }
-        send(KeyboardHandoffCheck.check(
+        guard hasFullAccess, !machine.isBusy else {
+            if !hasFullAccess {
+                keyboardLog.info("handoff check skipped: no Full Access")
+            }
+            return
+        }
+        let checked = KeyboardHandoffCheck.checkAndReport(
             PendingDictationStore.shared,
             ledger: handoffLedger,
             now: Date(),
             document: currentDocument()
-        ))
+        )
+        let summary = checked.report.summary
+        let uptime = Int(Date().timeIntervalSince(Self.processStartedAt))
+        keyboardLog.info("handoff check: \(summary, privacy: .public); process up \(uptime, privacy: .public) s, controller \(self.controllerNumber, privacy: .public) of \(Self.controllersLoaded, privacy: .public)")
+        #if DEBUG
+        probeForStaleHandoffRead(after: checked.report)
+        #endif
+        send(checked.event)
     }
+
+    #if DEBUG
+    /// Whether that check read a stale App Group: after a check that found
+    /// nothing awaited, or nothing stored, synchronize the App Group with
+    /// the preferences daemon and read again. A different answer means the
+    /// first read was out of date. It runs after the check decided, so the
+    /// decision still used what the keyboard first read.
+    private func probeForStaleHandoffRead(after report: KeyboardHandoffCheckReport) {
+        guard report.outcome == .absent || report.outcome == .pending else { return }
+        let store = PendingDictationStore.shared
+        let before = report.awaitedSession ?? "none"
+        _ = CFPreferencesAppSynchronize(FreeFlowIdentifiers.appGroupIdentifier as CFString)
+        let awaited = store.awaitedSessionID
+        let after = awaited.map { KeyboardHandoffCheck.shortID($0) } ?? "none"
+        let stored = KeyboardHandoffCheck.describe(store.peekResult(), awaited: awaited, now: Date())
+        let verdict = after == before && stored == report.stored ? "same as" : "DIFFERENT from"
+        keyboardLog.info("handoff reread after synchronizing: awaited \(after, privacy: .public); stored \(stored, privacy: .public); \(verdict, privacy: .public) the check's read")
+    }
+    #endif
 
     // MARK: DEBUG screenshot states
 

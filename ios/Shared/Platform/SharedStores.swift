@@ -2,6 +2,10 @@ import Foundation
 import os
 
 private let storesLog = Logger(subsystem: "com.zachlatta.freeflow.ios", category: "SharedStores")
+/// Handoff store changes, under the running process's own subsystem, so the
+/// keyboard's lines land with its other logs. Session IDs appear as their
+/// first 8 characters only, and never any text.
+private let handoffLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.zachlatta.freeflow.ios", category: "Handoff")
 
 /// The newest dictations, as a small JSON file in the App Group container.
 ///
@@ -112,13 +116,23 @@ final class PendingDictationStore {
     /// Setting nil removes it.
     var awaitedSessionID: UUID? {
         get {
-            defaults.string(forKey: Self.awaitedSessionKey).flatMap(UUID.init(uuidString:))
+            let sessionID = defaults.string(forKey: Self.awaitedSessionKey).flatMap(UUID.init(uuidString:))
+            #if DEBUG
+            // Every read, with its time and process, to compare what each
+            // process sees against what was written.
+            let read = sessionID.map { KeyboardHandoffCheck.shortID($0) } ?? "none"
+            handoffLog.info("read the awaited session: \(read, privacy: .public)")
+            #endif
+            return sessionID
         }
         set {
             if let newValue {
                 defaults.set(newValue.uuidString, forKey: Self.awaitedSessionKey)
+                let session = KeyboardHandoffCheck.shortID(newValue)
+                handoffLog.info("awaited session set to \(session, privacy: .public)")
             } else {
                 defaults.removeObject(forKey: Self.awaitedSessionKey)
+                handoffLog.info("awaited session cleared")
             }
         }
     }
@@ -127,6 +141,19 @@ final class PendingDictationStore {
     func save(_ pending: PendingDictation) {
         guard let data = try? JSONEncoder().encode(pending) else { return }
         defaults.set(data, forKey: Self.pendingDictationKey)
+        let session = KeyboardHandoffCheck.shortID(pending.sessionID)
+        handoffLog.info("result saved for \(session, privacy: .public)")
+    }
+
+    /// The stored result's session and creation time, without its text and
+    /// without removing it.
+    func peekResult() -> PendingDictationPeek {
+        guard let object = defaults.object(forKey: Self.pendingDictationKey) else { return .none }
+        guard let data = object as? Data,
+              let pending = try? JSONDecoder().decode(PendingDictation.self, from: data) else {
+            return .unreadable
+        }
+        return .stored(sessionID: pending.sessionID, createdAt: pending.createdAt)
     }
 
     /// Removes and returns the result for `sessionID`: `.fresh`, or
@@ -143,12 +170,18 @@ final class PendingDictationStore {
             return .none
         }
         discardResult()
-        return pending.isFresh(now: now) ? .fresh(pending) : .expired(pending)
+        let fresh = pending.isFresh(now: now)
+        let state = fresh ? "fresh" : "expired"
+        let session = KeyboardHandoffCheck.shortID(sessionID)
+        handoffLog.info("took the \(state, privacy: .public) result for \(session, privacy: .public)")
+        return fresh ? .fresh(pending) : .expired(pending)
     }
 
     /// Removes the pending result only. The awaited session stays.
     func discardResult() {
+        guard defaults.object(forKey: Self.pendingDictationKey) != nil else { return }
         defaults.removeObject(forKey: Self.pendingDictationKey)
+        handoffLog.info("stored result removed")
     }
 
     /// Clear History and Keep History off: removes the stored result, which
@@ -187,6 +220,7 @@ final class PendingDictationStore {
     func clear() {
         defaults.removeObject(forKey: Self.pendingDictationKey)
         defaults.removeObject(forKey: Self.awaitedSessionKey)
+        handoffLog.info("awaited session and stored result cleared")
     }
 
     /// The stored result. An unreadable one is removed.

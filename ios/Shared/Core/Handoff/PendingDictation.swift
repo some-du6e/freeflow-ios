@@ -12,9 +12,24 @@ struct PendingDictation: Codable, Equatable {
     var pressEnter: Bool
 
     func isFresh(now: Date) -> Bool {
-        let age = now.timeIntervalSince(createdAt)
-        return age >= -5 && age <= Self.maxAge
+        Self.isFresh(createdAt: createdAt, now: now)
     }
+
+    /// Younger than `maxAge`, allowing for clocks up to 5 s apart.
+    static func isFresh(createdAt: Date, now: Date) -> Bool {
+        let age = now.timeIntervalSince(createdAt)
+        return age >= -5 && age <= maxAge
+    }
+}
+
+/// What the store holds, read without removing it and without its text:
+/// enough to decide whether a result may be removed, and to log what was
+/// there.
+enum PendingDictationPeek: Equatable {
+    case none
+    /// Stored data that doesn't decode as a `PendingDictation`.
+    case unreadable
+    case stored(sessionID: UUID, createdAt: Date)
 }
 
 /// What `PendingDictationStore.take(sessionID:now:)` found for a session.

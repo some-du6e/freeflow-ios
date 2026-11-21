@@ -233,9 +233,15 @@ final class StoresTests: XCTestCase {
         let document = KeyboardDictationDocument(identifier: field, textBeforeCursor: "Synthetic before")
         let now = start.addingTimeInterval(30)
 
-        // Nothing awaited: a leftover result can never be inserted, so it goes.
+        // Nothing awaited, with a fresh result: the read can be stale, so the
+        // result stays for the keyboard that does await it.
         store.save(PendingDictation(sessionID: session, createdAt: start, text: "Synthetic orphan.", pressEnter: false))
         XCTAssertEqual(KeyboardHandoffCheck.check(store, ledger: ledger, now: now, document: document), .handoffAbsent)
+        XCTAssertNotNil(defaults.object(forKey: "ios_pending_dictation"), "A fresh result stays")
+
+        // Once it has expired, nobody can ever insert it, so it goes.
+        let expiredLater = start.addingTimeInterval(PendingDictation.maxAge + 1)
+        XCTAssertEqual(KeyboardHandoffCheck.check(store, ledger: ledger, now: expiredLater, document: document), .handoffAbsent)
         XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
 
         // Awaited with no result yet: keep waiting, counting from the open.
@@ -264,11 +270,35 @@ final class StoresTests: XCTestCase {
             .handoffResultArrived(old, expectedDocumentID: field, document: document)
         )
 
-        // Stopping the wait clears both keys.
+        // Stopping the wait clears both keys when the result is its own.
         store.save(fresh)
-        KeyboardHandoffCheck.stopAwaiting(store)
+        XCTAssertTrue(KeyboardHandoffCheck.stopAwaiting(store, now: now))
         XCTAssertNil(defaults.object(forKey: "ios_awaited_dictation_session"))
         XCTAssertNil(defaults.object(forKey: "ios_pending_dictation"))
+
+        // Another session's fresh result outlives the stop.
+        store.awaitedSessionID = session
+        let other = PendingDictation(sessionID: UUID(), createdAt: start, text: "Synthetic other.", pressEnter: false)
+        store.save(other)
+        XCTAssertFalse(KeyboardHandoffCheck.stopAwaiting(store, now: now))
+        XCTAssertNil(store.awaitedSessionID)
+        XCTAssertEqual(store.peekResult(), .stored(sessionID: other.sessionID, createdAt: start))
+    }
+
+    func testPeekResultDescribesTheStoredResultWithoutTakingIt() throws {
+        let defaults = try makeDefaults()
+        let store = PendingDictationStore(defaults: defaults)
+        XCTAssertEqual(store.peekResult(), PendingDictationPeek.none)
+
+        let pending = PendingDictation(sessionID: UUID(), createdAt: start, text: "Synthetic peek.", pressEnter: false)
+        store.save(pending)
+        XCTAssertEqual(store.peekResult(), .stored(sessionID: pending.sessionID, createdAt: start))
+        XCTAssertEqual(store.peekResult(), .stored(sessionID: pending.sessionID, createdAt: start), "Peeking twice leaves it")
+
+        defaults.set(Data("not json".utf8), forKey: "ios_pending_dictation")
+        XCTAssertEqual(store.peekResult(), .unreadable)
+        defaults.set("not data", forKey: "ios_pending_dictation")
+        XCTAssertEqual(store.peekResult(), .unreadable)
     }
 
     func testDiscardUnclaimedResult() throws {

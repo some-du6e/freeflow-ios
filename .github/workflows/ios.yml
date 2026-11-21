@@ -145,16 +145,18 @@ jobs:
         run: |
           mkdir -p "$DIAGNOSTICS_PATH"
           test_log="$DIAGNOSTICS_PATH/xcodebuild-test.log"
-          # The keyboard's own log, streamed live because the simulator
-          # doesn't keep info-level lines for later. It holds state names,
-          # capture events, counts and rates, never text or audio. It starts
-          # when the UI tests do, so it adds no load to the unit tests.
+          # The keyboard's own log and FreeFlow's handoff lines, streamed live
+          # because the simulator doesn't keep info-level lines for later.
+          # They hold state names, capture events, counts, rates and the first
+          # 8 characters of handoff session IDs, never text or audio. The
+          # stream starts when the UI tests do, so it adds no load to the
+          # unit tests.
           (
             until grep -q "Test Suite 'FreeFlowUITests.xctest' started" "$test_log" 2>/dev/null; do
               sleep 2
             done
             exec xcrun simctl spawn "$SIMULATOR_UDID" log stream --level info --style compact \
-              --predicate "subsystem == \"$FREEFLOW_KEYBOARD_ID\""
+              --predicate "subsystem == \"$FREEFLOW_KEYBOARD_ID\" OR (subsystem == \"$FREEFLOW_APP_ID\" AND category == \"Handoff\")"
           ) < /dev/null > "$DIAGNOSTICS_PATH/keyboard.log" 2>&1 &
           echo "KEYBOARD_LOG_PID=$!" >> "$GITHUB_ENV"
           xcodebuild test-without-building \
@@ -177,8 +179,8 @@ jobs:
           if [ -n "${KEYBOARD_LOG_PID:-}" ]; then
             kill "$KEYBOARD_LOG_PID" 2>/dev/null || true
             echo "::group::The keyboard's capture sessions, state changes and handoffs"
-            grep -E 'Capture session [0-9]+ (starting|audio graph started|finished|failed|stop timed out)|Capture start failed|:Keyboard\] ' \
-              "$DIAGNOSTICS_PATH/keyboard.log" | cut -c1-220 || echo "(none logged)"
+            grep -E 'Capture session [0-9]+ (starting|audio graph started|finished|failed|stop timed out)|Capture start failed|:(Keyboard|Handoff)\] ' \
+              "$DIAGNOSTICS_PATH/keyboard.log" | cut -c1-320 || echo "(none logged)"
             echo "::endgroup::"
           fi
           log="$DIAGNOSTICS_PATH/xcodebuild-test.log"
@@ -455,6 +457,9 @@ jobs:
     if: github.event_name == 'push'
     runs-on: macos-15
     timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository

@@ -141,8 +141,11 @@ final class FreeFlowKeyboardTests: FreeFlowKeyboardTestCase {
         XCTAssertFalse(trace.saw(.processing), "Cancel during recording still processed: \(trace)")
 
         // The mock lists a request as soon as it arrives. Watch for longer
-        // than a stray stop (1 s) plus an upload would take.
-        let called = waitUntil(timeout: 5) {
+        // than a stray stop would take to send one: this test records the
+        // synthetic source, whose stop waits up to CaptureTiming.stopTimeout
+        // (2.5 s; only a microphone session's wait is capped at 1 s), and the
+        // upload starts after that.
+        let called = waitUntil(timeout: 6) {
             ((try? providerRequests())?.all.count ?? 0) > 0
         }
         XCTAssertFalse(called, "Cancel still called the provider")

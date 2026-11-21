@@ -1389,15 +1389,43 @@ enum IOSKeyboardCoreTests {
             return here
         }
 
-        // Nothing awaited: a leftover result can never be inserted, so it is
-        // discarded instead of keeping its text in the App Group.
-        let orphaned = SyntheticHandoffStore(awaited: nil, take: .fresh(pending))
+        // Nothing awaited, with a fresh result: the read can be stale (a
+        // long-lived keyboard process read "nothing awaited" for a session it
+        // had opened itself), so the result stays for the keyboard that does
+        // await it.
+        let unawaitedFresh = SyntheticHandoffStore(awaited: nil, take: .fresh(pending))
+        let freshCheck = KeyboardHandoffCheck.checkAndReport(
+            unawaitedFresh, ledger: ledger, now: at(12), document: currentDocument()
+        )
+        TestSupport.expectEqual(freshCheck.event, .handoffAbsent)
+        TestSupport.expectEqual(unawaitedFresh.discards, 0)
+        TestSupport.expectEqual(unawaitedFresh.takes, [])
+        TestSupport.expectEqual(freshCheck.report, KeyboardHandoffCheckReport(
+            outcome: .absent,
+            awaitedSession: nil,
+            stored: "a result for \(KeyboardHandoffCheck.shortID(sessionOne)), under 10 s old",
+            removedResult: false
+        ))
+
+        // Nothing awaited, with an expired or unreadable result: nobody can
+        // ever insert it, so it goes instead of keeping its text in the App
+        // Group.
+        let late = at(10) + PendingDictation.maxAge + 1
+        let unawaitedExpired = SyntheticHandoffStore(awaited: nil, take: .fresh(pending))
+        let expiredCheck = KeyboardHandoffCheck.checkAndReport(
+            unawaitedExpired, ledger: ledger, now: late, document: currentDocument()
+        )
+        TestSupport.expectEqual(expiredCheck.event, .handoffAbsent)
+        TestSupport.expectEqual(unawaitedExpired.discards, 1)
+        TestSupport.expect(expiredCheck.report.removedResult, "The report says the expired result was removed")
+        TestSupport.expectEqual(expiredCheck.report.summary, "absent (awaited none; stored a result for \(KeyboardHandoffCheck.shortID(sessionOne)), expired; removed it)")
+        let unreadable = SyntheticHandoffStore(awaited: nil, take: PendingDictationTake.none, stored: .unreadable)
         TestSupport.expectEqual(
-            KeyboardHandoffCheck.check(orphaned, ledger: ledger, now: at(12), document: currentDocument()),
+            KeyboardHandoffCheck.check(unreadable, ledger: ledger, now: at(12), document: currentDocument()),
             .handoffAbsent
         )
-        TestSupport.expectEqual(orphaned.discards, 1)
-        TestSupport.expectEqual(orphaned.takes, [])
+        TestSupport.expectEqual(unreadable.discards, 1)
+        TestSupport.expectEqual(documentReads, 0)
 
         // Awaited, nothing yet: keep waiting, from when this keyboard opened the app.
         let waiting = SyntheticHandoffStore(awaited: sessionOne, take: PendingDictationTake.none)
@@ -1428,18 +1456,41 @@ enum IOSKeyboardCoreTests {
             .handoffPending(sessionID: sessionTwo, openedAt: nil)
         )
 
-        // Stopping the wait forgets the session and drops any result.
+        // Stopping the wait forgets the session and drops its result.
         let stopping = SyntheticHandoffStore(awaited: sessionOne, take: .fresh(pending))
-        KeyboardHandoffCheck.stopAwaiting(stopping)
+        TestSupport.expect(KeyboardHandoffCheck.stopAwaiting(stopping, now: at(12)), "Its own result goes")
         TestSupport.expect(stopping.awaitedSessionID == nil, "Nothing is awaited after stopping")
         TestSupport.expectEqual(stopping.discards, 1)
+
+        // A fresh result for another session stays: the awaited read can be
+        // stale, and the app may be writing it for a keyboard that waits.
+        let otherResult = PendingDictation(sessionID: sessionTwo, createdAt: at(10), text: "Elsewhere.", pressEnter: false)
+        let stoppingOther = SyntheticHandoffStore(awaited: sessionOne, take: .fresh(otherResult))
+        TestSupport.expect(!KeyboardHandoffCheck.stopAwaiting(stoppingOther, now: at(12)), "Another session's result stays")
+        TestSupport.expect(stoppingOther.awaitedSessionID == nil, "Nothing is awaited after stopping")
+        TestSupport.expectEqual(stoppingOther.discards, 0)
+        // A stale read of what was awaited doesn't delete the fresh result either.
+        let stoppingStale = SyntheticHandoffStore(awaited: nil, take: .fresh(pending))
+        TestSupport.expect(!KeyboardHandoffCheck.stopAwaiting(stoppingStale, now: at(12)), "Nothing known to stop")
+        TestSupport.expectEqual(stoppingStale.discards, 0)
+        // Once expired, another session's result goes too.
+        let stoppingExpired = SyntheticHandoffStore(awaited: sessionOne, take: .fresh(otherResult))
+        TestSupport.expect(KeyboardHandoffCheck.stopAwaiting(stoppingExpired, now: late), "A stale result goes")
+        TestSupport.expectEqual(stoppingExpired.discards, 1)
+
+        // The check's report for an awaited session with nothing yet.
+        let waitingCheck = KeyboardHandoffCheck.checkAndReport(
+            SyntheticHandoffStore(awaited: sessionOne, take: PendingDictationTake.none),
+            ledger: ledger, now: at(12), document: currentDocument()
+        )
+        TestSupport.expectEqual(waitingCheck.report.summary, "pending (awaited \(KeyboardHandoffCheck.shortID(sessionOne)); stored nothing)")
+        TestSupport.expectEqual(KeyboardHandoffCheck.shortID(sessionOne).count, 8)
 
         // What the keyboard then shows: an expired result ends the wait at
         // once, and nothing awaited returns it to rest.
         var machine = readyMachine()
         _ = machine.handle(.handoffPending(sessionID: sessionOne, openedAt: at(5)), now: at(5))
         let expired = SyntheticHandoffStore(awaited: sessionOne, take: .expired(pending))
-        let late = at(10) + PendingDictation.maxAge + 1
         _ = machine.handle(KeyboardHandoffCheck.check(expired, ledger: ledger, now: late, document: currentDocument()), now: late)
         TestSupport.expect(!machine.isWaitingForApp, "An expired result must end the wait")
         TestSupport.expectEqual(status(machine), .error)
@@ -1768,27 +1819,43 @@ enum IOSKeyboardCoreTests {
 }
 
 /// An in-memory `KeyboardHandoffStore` that answers `take` with a canned
-/// result and records what the keyboard asked of it.
+/// result and records what the keyboard asked of it. What `peekResult`
+/// reports follows the canned result unless `stored` says otherwise.
 private final class SyntheticHandoffStore: KeyboardHandoffStore {
     var awaitedSessionID: UUID?
     private var nextTake: PendingDictationTake
+    private var stored: PendingDictationPeek
     private(set) var takes: [UUID] = []
     private(set) var discards = 0
 
-    init(awaited: UUID?, take: PendingDictationTake) {
+    init(awaited: UUID?, take: PendingDictationTake, stored: PendingDictationPeek? = nil) {
         awaitedSessionID = awaited
         nextTake = take
+        switch take {
+        case .fresh(let pending), .expired(let pending):
+            self.stored = stored ?? .stored(sessionID: pending.sessionID, createdAt: pending.createdAt)
+        case .none:
+            self.stored = stored ?? PendingDictationPeek.none
+        }
     }
 
     func take(sessionID: UUID, now: Date) -> PendingDictationTake {
         takes.append(sessionID)
         let taken = nextTake
         nextTake = PendingDictationTake.none
+        if case .stored(let storedSession, _) = stored, storedSession == sessionID {
+            stored = PendingDictationPeek.none
+        }
         return taken
+    }
+
+    func peekResult() -> PendingDictationPeek {
+        stored
     }
 
     func discardResult() {
         discards += 1
         nextTake = PendingDictationTake.none
+        stored = PendingDictationPeek.none
     }
 }
