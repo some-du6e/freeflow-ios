@@ -1,8 +1,13 @@
 # FreeFlow maintenance guide
 
 FreeFlow is a native macOS menu-bar dictation app built directly with `swiftc`
-and Make. It does not use Swift Package Manager or an Xcode project. Preserve
-that architecture unless the user explicitly approves a migration.
+and Make. The macOS app does not use Swift Package Manager or an Xcode project.
+Preserve that architecture unless the user explicitly approves a migration.
+
+The iOS app and its dictation keyboard live under `ios/` and build with the
+committed `ios/FreeFlow.xcodeproj`, which the user approved for the iOS targets
+only. Keep its project format at Xcode 16 (`objectVersion = 77`): CI's Xcode
+26.6 cannot open the newer format Xcode 27 offers to upgrade to.
 
 ## Repository map
 
@@ -19,6 +24,17 @@ that architecture unless the user explicitly approves a migration.
 - `Sources/SettingsView.swift`, `Sources/SetupView.swift`, and other SwiftUI
   files: user interface.
 - `Tests/`: dependency-free executable tests.
+- `ios/`: the iOS app (`ios/FreeFlow`), keyboard extension
+  (`ios/FreeFlowKeyboard`) and shared code (`ios/Shared`); start with
+  `ios/README.md`.
+- `ios/Shared/Core/`: Foundation-only iOS code that `make test` also compiles
+  and tests.
+- `.github/workflows/ios.yml`: iOS build, unit tests and simulator UI tests
+  that drive the keyboard against `.github/scripts/mock-openai-server.py`.
+- `.github/workflows/ios-testflight.yml`, `.github/scripts/ios-testflight-*.sh`
+  and `ios/Config/ExportOptions-TestFlight.plist`: manual TestFlight signing
+  and upload. It uses the App Store Connect key in the `testflight`
+  environment; see `ios/TESTFLIGHT.md`.
 - `.github/workflows/check.yml`: pull-request verification.
 - `.github/workflows/release.yml`: semver-tagged production release.
 - `.github/workflows/dev-release.yml`: signed development release from `main`.
@@ -36,10 +52,16 @@ that architecture unless the user explicitly approves a migration.
   explicitly authorizes that action.
 - Do not change versions, release notes, signing, notarization, or release
   workflows during ordinary maintenance.
+- Run the TestFlight workflow only as a dry run (`-f dry_run=true`). The user
+  starts and approves real uploads, and manages the `testflight` environment,
+  its secrets and its variables.
 - Avoid adding dependencies when the standard library or existing frameworks
   are sufficient.
 - Production sources are discovered automatically by the Makefile. Test source
   dependencies must be listed explicitly in `TEST_PRODUCTION_SOURCES`.
+- The iOS targets compile an explicit list of `Sources/` files, the "Shared
+  macOS Sources" group in `ios/FreeFlow.xcodeproj/project.pbxproj`. A change
+  to one of those files must keep building for iOS 17 as an app extension.
 
 ## Verification
 
@@ -53,6 +75,14 @@ git diff --check
 `make check` performs a full Swift type-check, compiles and runs deterministic
 tests, validates plist files, and parses repository shell scripts and YAML.
 
+`make check` compiles no iOS code outside `ios/Shared/Core`. For changes under
+`ios/` or to a shared `Sources/` file, confirm the `iOS` workflow passes. It
+runs on pull requests into `main`, on pushes to `ios-wip/**` branches, and by
+hand with `gh workflow run ios.yml --ref <branch>`. Running the UI tests on a
+Mac needs the simulator setup and mock provider described in `ios/README.md`.
+To confirm the shipping Release configuration still compiles, run the TestFlight
+dry run: `gh workflow run ios-testflight.yml --ref <branch> -f dry_run=true`.
+
 A full app build is usually unnecessary. When a compile-and-bundle check is
 material to the change, use:
 
@@ -63,7 +93,9 @@ make ARCH="$(uname -m)" CODESIGN_IDENTITY=-
 Do not claim end-to-end behavior is verified from type-checking or a unit test.
 Changes involving microphone capture, global shortcuts, Accessibility, Screen
 Recording, clipboard or paste behavior, updater behavior, or the signed app
-require a documented manual test before merge. An agent may still open a draft
+require a documented manual test before merge. On iOS, in-keyboard recording,
+Full Access behavior and the keyboard-to-app fallback need that test on a
+physical iPhone; the simulator substitutes a mock microphone. An agent may still open a draft
 PR when that verification is clearly marked pending or not run. Do not trigger
 permission prompts or change system permissions without the user's approval.
 
@@ -115,3 +147,6 @@ A change is complete only when:
   and a documented safe path.
 - Treat workflow changes as sensitive because code executed from `main` can
   access signing and notarization secrets in the release jobs.
+- Flag any iOS path that starts a recording without the user's tap in FreeFlow
+  or its keyboard, or that inserts text into a field the keyboard has not
+  confirmed is the one the user dictated into.

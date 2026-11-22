@@ -22,6 +22,9 @@ struct FreeFlowTests {
         AppTextInsertionDispatchTests.run()
         await TranscriptionServiceTests.run()
         await APIConfigurationDraftTests.run()
+        await IOSSharedCoreTests.run()
+        IOSAudioCoreTests.run()
+        IOSKeyboardCoreTests.run()
         print("FreeFlowTests passed")
     }
 }

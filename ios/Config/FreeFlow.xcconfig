@@ -1,0 +1,43 @@
+// Shared build settings for the FreeFlow iOS project.
+//
+// This file is the project-level base configuration for Debug and Release.
+// Target-level settings in project.pbxproj override it, so keep the values
+// below out of the targets' build settings.
+//
+// To sign for a device with your own Apple developer team, copy
+// Local.xcconfig.example to Local.xcconfig next to this file. Local.xcconfig
+// is gitignored and is included last, so its values win.
+
+// The app's bundle identifier. The keyboard appends ".keyboard", the tests
+// append ".tests" and ".uitests", the App Group is "group.<prefix>", and the
+// shared keychain access group is "<team prefix><prefix>.shared".
+FREEFLOW_BUNDLE_ID_PREFIX = com.zachlatta.freeflow.ios
+
+// The "<team prefix>" of the shared keychain access group, including its
+// trailing dot. Both entitlements files and both Info.plists use it. Xcode
+// fills in $(AppIdentifierPrefix) when it signs: the prefix from the
+// provisioning profile, "<DEVELOPMENT_TEAM>." for an ad-hoc device archive,
+// or "FAKETEAMID." when no team is set, as in simulator CI. The TestFlight
+// workflow (.github/workflows/ios-testflight.yml) sets this to "<team ID>."
+// on the command line, so its archive doesn't depend on what ad-hoc signing
+// picks.
+FREEFLOW_KEYCHAIN_GROUP_PREFIX = $(AppIdentifierPrefix)
+
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+TARGETED_DEVICE_FAMILY = 1
+SWIFT_VERSION = 5.0
+SWIFT_TREAT_WARNINGS_AS_ERRORS = YES
+// Match the macOS swiftc build, which shares Sources/ files with these
+// targets: nonisolated by default and no Approachable Concurrency, so
+// shared code has the same isolation on both platforms.
+SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
+SWIFT_APPROACHABLE_CONCURRENCY = NO
+SWIFT_STRICT_CONCURRENCY = minimal
+
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM =
+
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+
+#include? "Local.xcconfig"

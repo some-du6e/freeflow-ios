@@ -16,11 +16,13 @@ TEST_CONTEXT_HARNESS = $(BUILD_DIR)/ContextCaptureHarness.swift
 TEST_DISPATCH_HARNESS = $(BUILD_DIR)/AppTextInsertionDispatchHarness.swift
 TEST_PRODUCTION_SOURCES = \
 	Sources/APIConfigurationDraft.swift \
+	Sources/AppContext.swift \
 	Sources/AppContextService.swift \
 	Sources/AppName.swift \
 	Sources/AppTextInsertionCore.swift \
 	Sources/AppTextInsertionTarget.swift \
 	Sources/ContextInferenceFailure.swift \
+	Sources/LiveAudioLevelNormalizer.swift \
 	Sources/LLMAPITransport.swift \
 	Sources/LLMCooldownManager.swift \
 	Sources/ModelConfiguration.swift \
@@ -37,11 +39,37 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
 	Sources/ShortcutCore/ShortcutModels.swift
+# Foundation-only helpers shared by the iOS app and keyboard. The iOS targets
+# compile them through the ios/Shared synchronized folder; the macOS test
+# runner compiles them too so their tests run in `make test`. Never add these
+# to SOURCES: they are not part of the macOS app.
+IOS_PORTABLE_SOURCES = $(sort $(wildcard ios/Shared/Core/*.swift ios/Shared/Core/*/*.swift))
+TEST_PRODUCTION_SOURCES += $(IOS_PORTABLE_SOURCES)
 TEST_SOURCES = $(shell find Tests -name '*.swift' -type f | LC_ALL=C sort)
 SHELL_SCRIPTS = $(shell find .github/scripts .agents/skills -name '*.sh' -type f | LC_ALL=C sort)
 YAML_FILES = $(shell find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
 RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
+
+# iOS app and keyboard extension (Xcode project; see ios/ and .github/workflows/ios.yml).
+IOS_PLISTS = \
+	ios/FreeFlow.xcodeproj/project.pbxproj \
+	ios/FreeFlow/Info.plist \
+	ios/FreeFlow/FreeFlow.entitlements \
+	ios/FreeFlowKeyboard/Info.plist \
+	ios/FreeFlowKeyboard/FreeFlowKeyboard.entitlements \
+	ios/Config/ExportOptions-TestFlight.plist
+IOS_DESTINATION ?= platform=iOS Simulator,name=iPhone 17
+IOS_RESULT_BUNDLE = $(BUILD_DIR)/ios/FreeFlow.xcresult
+IOS_XCODEBUILD = xcodebuild \
+	-project ios/FreeFlow.xcodeproj \
+	-scheme FreeFlow \
+	-configuration Debug \
+	-destination '$(IOS_DESTINATION)' \
+	-derivedDataPath $(BUILD_DIR)/ios/DerivedData
+# Ad-hoc simulator signing that keeps the App Group and keychain entitlements
+# without an Apple developer team, matching CI.
+IOS_SIGNING_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
 
 # Pick the icon source based on which bundle we are building. Dev builds get
 # a distinct hammer-on-waveform icon so a developer's dock shows at a glance
@@ -54,7 +82,7 @@ ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 endif
 
-.PHONY: all check clean run icon dmg codesign-dmg notarize test typecheck validate
+.PHONY: all check clean run icon dmg codesign-dmg notarize test typecheck validate ios-build ios-test
 
 all: $(APP_EXECUTABLE_TARGET)
 
@@ -131,9 +159,32 @@ test: $(TEST_CONTEXT_HARNESS) $(TEST_DISPATCH_HARNESS)
 	@$(TEST_RUNNER)
 
 validate:
-	plutil -lint Info.plist FreeFlow.entitlements
+	plutil -lint Info.plist FreeFlow.entitlements $(IOS_PLISTS)
 	@set -e; for script in $(SHELL_SCRIPTS); do bash -n "$$script"; done
 	@ruby -e 'require "yaml"; ARGV.each { |file| YAML.load_file(file) }' $(YAML_FILES)
+
+ios-build:
+	$(IOS_XCODEBUILD) $(IOS_SIGNING_FLAGS) build
+
+ios-test:
+	rm -rf "$(IOS_RESULT_BUNDLE)"
+	$(IOS_XCODEBUILD) -resultBundlePath "$(IOS_RESULT_BUNDLE)" $(IOS_SIGNING_FLAGS) test
+
+# The UI tests expect the mock provider at http://127.0.0.1:8765/v1 and a
+# simulator with the FreeFlow keyboard and Full Access enabled. CI does both
+# (.github/workflows/ios.yml); these run the same steps by hand.
+.PHONY: ios-mock-provider ios-mock-provider-selftest ios-simulator-prepare
+ios-mock-provider:
+	python3 .github/scripts/mock-openai-server.py --host 127.0.0.1 --port 8765 --latency 2
+
+ios-mock-provider-selftest:
+	python3 .github/scripts/mock-openai-server.py --self-test
+
+# Usage: make ios-simulator-prepare IOS_SIMULATOR_UDID=<udid>, after ios-build.
+ios-simulator-prepare:
+	@test -n "$(IOS_SIMULATOR_UDID)" || { echo "Set IOS_SIMULATOR_UDID to a booted simulator's UDID"; exit 1; }
+	.github/scripts/prepare-ios-simulator.sh configure "$(IOS_SIMULATOR_UDID)" \
+		"$(BUILD_DIR)/ios/DerivedData/Build/Products/Debug-iphonesimulator/FreeFlow.app"
 
 icon: $(ICON_ICNS)
 

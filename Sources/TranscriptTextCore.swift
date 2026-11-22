@@ -71,7 +71,7 @@ enum TranscriptionResponseParser {
             os_log(
                 .info,
                 log: transcriptTextLog,
-                "Skipping hallucination filter for '%{public}@': provider response has no segments/no_speech metadata",
+                "Skipping hallucination filter for '%{private}@': provider response has no segments/no_speech metadata",
                 normalized
             )
             return false
@@ -81,7 +81,7 @@ enum TranscriptionResponseParser {
             os_log(
                 .info,
                 log: transcriptTextLog,
-                "Skipping hallucination filter for '%{public}@': provider response omitted no_speech_prob",
+                "Skipping hallucination filter for '%{private}@': provider response omitted no_speech_prob",
                 normalized
             )
             return false

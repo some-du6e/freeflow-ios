@@ -3,3 +3,10 @@ build/
 *.swp
 .env
 .build
+ios/Config/Local.xcconfig
+xcuserdata/
+*.xcresult
+DerivedData/
+# App Store Connect API keys must never be committed.
+*.p8
+private_keys/

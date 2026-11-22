@@ -1,0 +1,779 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		FF1000000000000000000601 /* TranscriptTextCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000106 /* TranscriptTextCore.swift */; };
+		FF1000000000000000000602 /* TranscriptTextCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000106 /* TranscriptTextCore.swift */; };
+		FF1000000000000000000604 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000107 /* TranscriptionService.swift */; };
+		FF1000000000000000000605 /* LLMAPITransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000108 /* LLMAPITransport.swift */; };
+		FF1000000000000000000606 /* TemperatureCapabilityCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000109 /* TemperatureCapabilityCache.swift */; };
+		FF1000000000000000000607 /* PostProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000110 /* PostProcessingService.swift */; };
+		FF1000000000000000000608 /* AppContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000111 /* AppContext.swift */; };
+		FF1000000000000000000609 /* ContextInferenceFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000112 /* ContextInferenceFailure.swift */; };
+		FF1000000000000000000610 /* LLMCooldownManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000113 /* LLMCooldownManager.swift */; };
+		FF1000000000000000000611 /* ModelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000114 /* ModelConfiguration.swift */; };
+		FF1000000000000000000612 /* TranscriptionErrorPresentationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */; };
+		FF1000000000000000000613 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000116 /* NetworkMonitor.swift */; };
+		FF1000000000000000000614 /* LiveAudioLevelNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */; };
+		FF1000000000000000000615 /* APIConfigurationDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000118 /* APIConfigurationDraft.swift */; };
+		FF1000000000000000000616 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000107 /* TranscriptionService.swift */; };
+		FF1000000000000000000617 /* LLMAPITransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000108 /* LLMAPITransport.swift */; };
+		FF1000000000000000000618 /* TemperatureCapabilityCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000109 /* TemperatureCapabilityCache.swift */; };
+		FF1000000000000000000619 /* PostProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000110 /* PostProcessingService.swift */; };
+		FF1000000000000000000620 /* AppContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000111 /* AppContext.swift */; };
+		FF1000000000000000000621 /* ContextInferenceFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000112 /* ContextInferenceFailure.swift */; };
+		FF1000000000000000000622 /* LLMCooldownManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000113 /* LLMCooldownManager.swift */; };
+		FF1000000000000000000623 /* ModelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000114 /* ModelConfiguration.swift */; };
+		FF1000000000000000000624 /* TranscriptionErrorPresentationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */; };
+		FF1000000000000000000625 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000116 /* NetworkMonitor.swift */; };
+		FF1000000000000000000626 /* LiveAudioLevelNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */; };
+		FF1000000000000000000603 /* FreeFlowKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FF1000000000000000000102 /* FreeFlowKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		FF1000000000000000000701 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FF1000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FF1000000000000000000402;
+			remoteInfo = FreeFlowKeyboard;
+		};
+		FF1000000000000000000702 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FF1000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FF1000000000000000000401;
+			remoteInfo = FreeFlow;
+		};
+		FF1000000000000000000703 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FF1000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FF1000000000000000000401;
+			remoteInfo = FreeFlow;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		FF1000000000000000000504 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				FF1000000000000000000603 /* FreeFlowKeyboard.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		FF1000000000000000000101 /* FreeFlow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FreeFlow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF1000000000000000000102 /* FreeFlowKeyboard.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FreeFlowKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF1000000000000000000103 /* FreeFlowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FreeFlowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF1000000000000000000104 /* FreeFlowUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FreeFlowUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF1000000000000000000105 /* FreeFlow.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = FreeFlow.xcconfig; sourceTree = "<group>"; };
+		FF1000000000000000000106 /* TranscriptTextCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptTextCore.swift; sourceTree = "<group>"; };
+		FF1000000000000000000107 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
+		FF1000000000000000000108 /* LLMAPITransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMAPITransport.swift; sourceTree = "<group>"; };
+		FF1000000000000000000109 /* TemperatureCapabilityCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemperatureCapabilityCache.swift; sourceTree = "<group>"; };
+		FF1000000000000000000110 /* PostProcessingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostProcessingService.swift; sourceTree = "<group>"; };
+		FF1000000000000000000111 /* AppContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContext.swift; sourceTree = "<group>"; };
+		FF1000000000000000000112 /* ContextInferenceFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextInferenceFailure.swift; sourceTree = "<group>"; };
+		FF1000000000000000000113 /* LLMCooldownManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMCooldownManager.swift; sourceTree = "<group>"; };
+		FF1000000000000000000114 /* ModelConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelConfiguration.swift; sourceTree = "<group>"; };
+		FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionErrorPresentationCore.swift; sourceTree = "<group>"; };
+		FF1000000000000000000116 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAudioLevelNormalizer.swift; sourceTree = "<group>"; };
+		FF1000000000000000000118 /* APIConfigurationDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIConfigurationDraft.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		FF1000000000000000000301 /* Exceptions for "FreeFlow" folder in "FreeFlow" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				FreeFlow.entitlements,
+				Info.plist,
+			);
+			target = FF1000000000000000000401 /* FreeFlow */;
+		};
+		FF1000000000000000000302 /* Exceptions for "FreeFlowKeyboard" folder in "FreeFlowKeyboard" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				FreeFlowKeyboard.entitlements,
+				Info.plist,
+			);
+			target = FF1000000000000000000402 /* FreeFlowKeyboard */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		FF1000000000000000000201 /* FreeFlow */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FF1000000000000000000301 /* Exceptions for "FreeFlow" folder in "FreeFlow" target */,
+			);
+			path = FreeFlow;
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000202 /* FreeFlowKeyboard */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FF1000000000000000000302 /* Exceptions for "FreeFlowKeyboard" folder in "FreeFlowKeyboard" target */,
+			);
+			path = FreeFlowKeyboard;
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000203 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000204 /* FreeFlowTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FreeFlowTests;
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000205 /* FreeFlowUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FreeFlowUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FF1000000000000000000502 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000512 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000522 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000532 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		FF1000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				FF1000000000000000000201 /* FreeFlow */,
+				FF1000000000000000000202 /* FreeFlowKeyboard */,
+				FF1000000000000000000203 /* Shared */,
+				FF1000000000000000000005 /* Shared macOS Sources */,
+				FF1000000000000000000204 /* FreeFlowTests */,
+				FF1000000000000000000205 /* FreeFlowUITests */,
+				FF1000000000000000000004 /* Config */,
+				FF1000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FF1000000000000000000101 /* FreeFlow.app */,
+				FF1000000000000000000102 /* FreeFlowKeyboard.appex */,
+				FF1000000000000000000103 /* FreeFlowTests.xctest */,
+				FF1000000000000000000104 /* FreeFlowUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000004 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				FF1000000000000000000105 /* FreeFlow.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		FF1000000000000000000005 /* Shared macOS Sources */ = {
+			isa = PBXGroup;
+			children = (
+				FF1000000000000000000106 /* TranscriptTextCore.swift */,
+				FF1000000000000000000118 /* APIConfigurationDraft.swift */,
+				FF1000000000000000000111 /* AppContext.swift */,
+				FF1000000000000000000112 /* ContextInferenceFailure.swift */,
+				FF1000000000000000000108 /* LLMAPITransport.swift */,
+				FF1000000000000000000113 /* LLMCooldownManager.swift */,
+				FF1000000000000000000117 /* LiveAudioLevelNormalizer.swift */,
+				FF1000000000000000000114 /* ModelConfiguration.swift */,
+				FF1000000000000000000116 /* NetworkMonitor.swift */,
+				FF1000000000000000000110 /* PostProcessingService.swift */,
+				FF1000000000000000000109 /* TemperatureCapabilityCache.swift */,
+				FF1000000000000000000115 /* TranscriptionErrorPresentationCore.swift */,
+				FF1000000000000000000107 /* TranscriptionService.swift */,
+			);
+			name = "Shared macOS Sources";
+			path = ../Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FF1000000000000000000401 /* FreeFlow */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF1000000000000000000A02 /* Build configuration list for PBXNativeTarget "FreeFlow" */;
+			buildPhases = (
+				FF1000000000000000000501 /* Sources */,
+				FF1000000000000000000502 /* Frameworks */,
+				FF1000000000000000000503 /* Resources */,
+				FF1000000000000000000504 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FF1000000000000000000801 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FF1000000000000000000201 /* FreeFlow */,
+				FF1000000000000000000203 /* Shared */,
+			);
+			name = FreeFlow;
+			packageProductDependencies = (
+			);
+			productName = FreeFlow;
+			productReference = FF1000000000000000000101 /* FreeFlow.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FF1000000000000000000402 /* FreeFlowKeyboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF1000000000000000000A03 /* Build configuration list for PBXNativeTarget "FreeFlowKeyboard" */;
+			buildPhases = (
+				FF1000000000000000000511 /* Sources */,
+				FF1000000000000000000512 /* Frameworks */,
+				FF1000000000000000000513 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FF1000000000000000000202 /* FreeFlowKeyboard */,
+				FF1000000000000000000203 /* Shared */,
+			);
+			name = FreeFlowKeyboard;
+			packageProductDependencies = (
+			);
+			productName = FreeFlowKeyboard;
+			productReference = FF1000000000000000000102 /* FreeFlowKeyboard.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		FF1000000000000000000403 /* FreeFlowTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF1000000000000000000A04 /* Build configuration list for PBXNativeTarget "FreeFlowTests" */;
+			buildPhases = (
+				FF1000000000000000000521 /* Sources */,
+				FF1000000000000000000522 /* Frameworks */,
+				FF1000000000000000000523 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FF1000000000000000000802 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FF1000000000000000000204 /* FreeFlowTests */,
+			);
+			name = FreeFlowTests;
+			packageProductDependencies = (
+			);
+			productName = FreeFlowTests;
+			productReference = FF1000000000000000000103 /* FreeFlowTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		FF1000000000000000000404 /* FreeFlowUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF1000000000000000000A05 /* Build configuration list for PBXNativeTarget "FreeFlowUITests" */;
+			buildPhases = (
+				FF1000000000000000000531 /* Sources */,
+				FF1000000000000000000532 /* Frameworks */,
+				FF1000000000000000000533 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FF1000000000000000000803 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FF1000000000000000000205 /* FreeFlowUITests */,
+			);
+			name = FreeFlowUITests;
+			packageProductDependencies = (
+			);
+			productName = FreeFlowUITests;
+			productReference = FF1000000000000000000104 /* FreeFlowUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FF1000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					FF1000000000000000000401 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					FF1000000000000000000402 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					FF1000000000000000000403 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = FF1000000000000000000401;
+					};
+					FF1000000000000000000404 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = FF1000000000000000000401;
+					};
+				};
+			};
+			buildConfigurationList = FF1000000000000000000A01 /* Build configuration list for PBXProject "FreeFlow" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = FF1000000000000000000002;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FF1000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FF1000000000000000000401 /* FreeFlow */,
+				FF1000000000000000000402 /* FreeFlowKeyboard */,
+				FF1000000000000000000403 /* FreeFlowTests */,
+				FF1000000000000000000404 /* FreeFlowUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FF1000000000000000000503 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000513 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000523 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000533 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FF1000000000000000000501 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF1000000000000000000601 /* TranscriptTextCore.swift in Sources */,
+				FF1000000000000000000604 /* TranscriptionService.swift in Sources */,
+				FF1000000000000000000605 /* LLMAPITransport.swift in Sources */,
+				FF1000000000000000000606 /* TemperatureCapabilityCache.swift in Sources */,
+				FF1000000000000000000607 /* PostProcessingService.swift in Sources */,
+				FF1000000000000000000608 /* AppContext.swift in Sources */,
+				FF1000000000000000000609 /* ContextInferenceFailure.swift in Sources */,
+				FF1000000000000000000610 /* LLMCooldownManager.swift in Sources */,
+				FF1000000000000000000611 /* ModelConfiguration.swift in Sources */,
+				FF1000000000000000000612 /* TranscriptionErrorPresentationCore.swift in Sources */,
+				FF1000000000000000000613 /* NetworkMonitor.swift in Sources */,
+				FF1000000000000000000614 /* LiveAudioLevelNormalizer.swift in Sources */,
+				FF1000000000000000000615 /* APIConfigurationDraft.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000511 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF1000000000000000000602 /* TranscriptTextCore.swift in Sources */,
+				FF1000000000000000000616 /* TranscriptionService.swift in Sources */,
+				FF1000000000000000000617 /* LLMAPITransport.swift in Sources */,
+				FF1000000000000000000618 /* TemperatureCapabilityCache.swift in Sources */,
+				FF1000000000000000000619 /* PostProcessingService.swift in Sources */,
+				FF1000000000000000000620 /* AppContext.swift in Sources */,
+				FF1000000000000000000621 /* ContextInferenceFailure.swift in Sources */,
+				FF1000000000000000000622 /* LLMCooldownManager.swift in Sources */,
+				FF1000000000000000000623 /* ModelConfiguration.swift in Sources */,
+				FF1000000000000000000624 /* TranscriptionErrorPresentationCore.swift in Sources */,
+				FF1000000000000000000625 /* NetworkMonitor.swift in Sources */,
+				FF1000000000000000000626 /* LiveAudioLevelNormalizer.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000521 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF1000000000000000000531 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FF1000000000000000000801 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FF1000000000000000000402 /* FreeFlowKeyboard */;
+			targetProxy = FF1000000000000000000701 /* PBXContainerItemProxy */;
+		};
+		FF1000000000000000000802 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FF1000000000000000000401 /* FreeFlow */;
+			targetProxy = FF1000000000000000000702 /* PBXContainerItemProxy */;
+		};
+		FF1000000000000000000803 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FF1000000000000000000401 /* FreeFlow */;
+			targetProxy = FF1000000000000000000703 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FF1000000000000000000901 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = FF1000000000000000000105 /* FreeFlow.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FF1000000000000000000902 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = FF1000000000000000000105 /* FreeFlow.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		FF1000000000000000000911 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = FreeFlow/FreeFlow.entitlements;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FreeFlow/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		FF1000000000000000000912 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = FreeFlow/FreeFlow.entitlements;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FreeFlow/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		FF1000000000000000000921 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = FreeFlowKeyboard/FreeFlowKeyboard.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FreeFlowKeyboard/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX).keyboard";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		FF1000000000000000000922 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = FreeFlowKeyboard/FreeFlowKeyboard.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FreeFlowKeyboard/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX).keyboard";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		FF1000000000000000000931 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX).tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FreeFlow.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FreeFlow";
+			};
+			name = Debug;
+		};
+		FF1000000000000000000932 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX).tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FreeFlow.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FreeFlow";
+			};
+			name = Release;
+		};
+		FF1000000000000000000941 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TEST_TARGET_NAME = FreeFlow;
+			};
+			name = Debug;
+		};
+		FF1000000000000000000942 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FREEFLOW_BUNDLE_ID_PREFIX).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TEST_TARGET_NAME = FreeFlow;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FF1000000000000000000A01 /* Build configuration list for PBXProject "FreeFlow" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF1000000000000000000901 /* Debug */,
+				FF1000000000000000000902 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF1000000000000000000A02 /* Build configuration list for PBXNativeTarget "FreeFlow" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF1000000000000000000911 /* Debug */,
+				FF1000000000000000000912 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF1000000000000000000A03 /* Build configuration list for PBXNativeTarget "FreeFlowKeyboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF1000000000000000000921 /* Debug */,
+				FF1000000000000000000922 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF1000000000000000000A04 /* Build configuration list for PBXNativeTarget "FreeFlowTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF1000000000000000000931 /* Debug */,
+				FF1000000000000000000932 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF1000000000000000000A05 /* Build configuration list for PBXNativeTarget "FreeFlowUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF1000000000000000000941 /* Debug */,
+				FF1000000000000000000942 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = FF1000000000000000000001 /* Project object */;
+}
