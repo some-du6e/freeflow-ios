@@ -155,8 +155,12 @@ enum KeyboardDictationEvent: Equatable {
     /// The `pending-insert` CTA: insert the held handoff result into the
     /// current field, which the tap makes an explicit choice.
     case insertPendingTapped(document: KeyboardDictationDocument)
-    /// The store is still waiting on `sessionID` and has no result yet.
-    /// `openedAt` is when this keyboard opened the app for it, if known.
+    /// The store is waiting on `sessionID`: a check found no result for it
+    /// yet, or the keyboard is appearing (`KeyboardHandoffCheck
+    /// .appearanceEvent`), with the result stored or not. `openedAt` is when
+    /// the keyboard opened the app for it. It is nil when unknown, and when
+    /// the keyboard appears with the result already stored, so the wait limit
+    /// can't let go of a result the check is about to deliver.
     case handoffPending(sessionID: UUID, openedAt: Date?)
     /// The store isn't waiting on any session.
     case handoffAbsent
@@ -1068,7 +1072,8 @@ struct KeyboardDictationMachine: Equatable {
             phase = .waitingForApp(sessionID: sessionID, since: since, nextCheck: now + Self.handoffCheckInterval)
             return []
         case .pendingInsert(let pending, _) where pending.sessionID == sessionID:
-            // Still awaited with nothing stored: the offer holds the text.
+            // Still awaited: the offer holds the text, whether or not the
+            // store still has its copy.
             return []
         case .starting, .recording, .processing:
             // Capture is under way; don't adopt.

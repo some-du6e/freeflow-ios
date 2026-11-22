@@ -185,9 +185,10 @@ What stays on the phone:
 - **Recordings:** deleted after transcription. After a failed upload the app
   keeps the file so you can try again, until you close the recorder.
 
-Logs record only states, counts, durations and the first 8 characters of
-the random IDs that tie a keyboard handoff together. They never contain
-transcripts, audio, keys or URLs.
+Logs record states, counts, durations, sample rates and gain, error codes
+and types, and random identifiers: a recording's file name when its upload
+fails, and the first 8 characters of the IDs that tie a keyboard handoff
+together. They never contain transcripts, audio, keys or URLs.
 
 ## Limitations and risks
 
