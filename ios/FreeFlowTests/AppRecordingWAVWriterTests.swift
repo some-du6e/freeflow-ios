@@ -95,8 +95,11 @@ final class AppRecordingWAVWriterTests: XCTestCase {
         XCTAssertFalse(silentMeter.hasHeardAudio)
 
         var toneMeter = AppRecorderLevelMeter()
-        let tone = (0..<3_200).map { index in
-            Int16(sin(Double(index) * 2 * .pi * 440 / 16_000) * 12_000)
+        // Explicit types and steps: Xcode 27's type checker times out on the one-line form.
+        let radiansPerSample: Double = 2 * Double.pi * 440 / 16_000
+        let tone: [Int16] = (0..<3_200).map { (index: Int) -> Int16 in
+            let sample: Double = sin(Double(index) * radiansPerSample) * 12_000
+            return Int16(sample)
         }
         let toneLevel = tone.withUnsafeBufferPointer { toneMeter.consume($0) }
         XCTAssertGreaterThan(toneLevel, 0.1)
